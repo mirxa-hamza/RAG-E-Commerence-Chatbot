@@ -1,0 +1,5 @@
+# Test-only dependencies (the app itself does not need these).
+-r requirements.txt
+# FastAPI's TestClient transport. Already pinned in requirements.txt for the Gemini path;
+# repeated here so this file stands alone as "what the tests need".
+httpx==0.28.1

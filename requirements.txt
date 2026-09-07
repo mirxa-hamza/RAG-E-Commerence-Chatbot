@@ -1,0 +1,45 @@
+# Everything the app needs. One file - there is one deployment target: this machine.
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+
+# --- Documents ------------------------------------------------------------------------
+# PDF text extraction. NOTE: AGPL-3.0, unlike everything else here. Fine for personal and
+# learning use; if you ship this, either comply with AGPL or buy Artifex's commercial
+# licence.
+pymupdf==1.28.2
+# Multipart form parsing - required by FastAPI for the PDF upload endpoint.
+python-multipart==0.0.20
+
+# --- Local models ---------------------------------------------------------------------
+# Embeddings (BAAI/bge-small-en-v1.5) and the cross-encoder re-ranker, both on this CPU.
+# This is what pulls in torch, which is the bulk of the install.
+sentence-transformers==3.0.1
+
+# --- Vector store ---------------------------------------------------------------------
+# chromadb 0.5.x hard-requires numpy<2.0, which has no Windows ARM64 wheel - pip is forced
+# onto numpy>=2.0 there and 0.5.x then crashes at import (np.float_ removed in NumPy 2.0).
+# chromadb>=1.0 dropped both that pin and the posthog telemetry dependency.
+chromadb==1.5.9
+
+# --- Keyword search -------------------------------------------------------------------
+# Lexical half of hybrid retrieval (pure Python, no index server).
+rank-bm25==0.2.2
+
+# --- Answer generation ----------------------------------------------------------------
+# groq<0.13 passes a `proxies` kwarg to httpx.Client that httpx>=0.28 no longer accepts.
+groq==1.7.0
+# HTTP client for the Gemini API path (LLM_PROVIDER=gemini). Already in the tree via groq;
+# pinned here because src/ml/gemini.py imports it directly.
+httpx==0.28.1
+
+# --- Configuration --------------------------------------------------------------------
+python-dotenv==1.0.1
+
+# --- Authentication -------------------------------------------------------------------
+# Async MongoDB driver (pymongo comes with it, and is used directly for ObjectId/errors).
+motor==3.7.1
+# JWT encode/decode. [cryptography] pulls the backend jose needs for HS256.
+python-jose[cryptography]==3.5.0
+# Password hashing with Argon2id. Deliberately NOT passlib: it is unmaintained and breaks
+# against recent bcrypt releases.
+pwdlib[argon2]==0.3.1
