@@ -1,0 +1,661 @@
+:root {
+  --lux-bg: #fbfaf6;
+  --lux-cream: #f2efe7;
+  --lux-card: rgba(255, 255, 255, 0.78);
+  --lux-card-strong: rgba(255, 255, 255, 0.92);
+  --lux-ink: #171f1b;
+  --lux-muted: #66706a;
+  --lux-accent: #214d3b;
+  --lux-accent-2: #b88745;
+  --lux-line: rgba(33, 77, 59, 0.16);
+  --lux-shadow: 0 24px 70px rgba(23, 31, 27, 0.12);
+  --lux-shadow-soft: 0 12px 34px rgba(23, 31, 27, 0.08);
+  --lux-ease: cubic-bezier(.2, .8, .2, 1);
+}
+
+html {
+  background:
+    radial-gradient(circle at top left, rgba(184, 135, 69, .18), transparent 32rem),
+    radial-gradient(circle at bottom right, rgba(33, 77, 59, .14), transparent 30rem),
+    var(--lux-bg);
+}
+
+body {
+  color: var(--lux-ink);
+  background: transparent;
+  overflow-x: hidden;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: -1;
+  opacity: .45;
+  background-image:
+    linear-gradient(rgba(33, 77, 59, .035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(33, 77, 59, .035) 1px, transparent 1px);
+  background-size: 42px 42px;
+  mask-image: linear-gradient(to bottom, #000, transparent 82%);
+}
+
+button,
+input,
+select,
+textarea,
+.product-card,
+.message,
+.preferences,
+.catalog-tag,
+.suggestions button {
+  transition:
+    transform .22s var(--lux-ease),
+    box-shadow .22s var(--lux-ease),
+    border-color .22s var(--lux-ease),
+    background .22s var(--lux-ease),
+    color .22s var(--lux-ease),
+    opacity .22s var(--lux-ease);
+}
+
+input,
+select,
+textarea {
+  min-height: 50px;
+  border-color: var(--lux-line);
+  background: rgba(255, 255, 255, .82);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .65);
+}
+
+input:hover,
+select:hover,
+textarea:hover {
+  border-color: rgba(33, 77, 59, .32);
+}
+
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  border-color: var(--lux-accent);
+  box-shadow: 0 0 0 5px rgba(33, 77, 59, .1);
+}
+
+.primary {
+  position: relative;
+  overflow: hidden;
+  border: 0;
+  background:
+    linear-gradient(135deg, #1e4a39, #193829 58%, #9a713c);
+  box-shadow: 0 14px 30px rgba(33, 77, 59, .24);
+}
+
+.primary::after {
+  content: "";
+  position: absolute;
+  inset: -60% auto -60% -40%;
+  width: 36%;
+  transform: rotate(18deg);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .34), transparent);
+  transition: left .55s var(--lux-ease);
+}
+
+.primary:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 18px 42px rgba(33, 77, 59, .28);
+}
+
+.primary:hover:not(:disabled)::after {
+  left: 115%;
+}
+
+.primary:active:not(:disabled),
+.suggestions button:active,
+.product-card:active {
+  transform: translateY(0) scale(.99);
+}
+
+.auth-shell {
+  position: relative;
+  isolation: isolate;
+  background:
+    radial-gradient(circle at 78% 18%, rgba(184, 135, 69, .16), transparent 18rem),
+    linear-gradient(115deg, rgba(239, 242, 233, .95), rgba(251, 250, 246, .8));
+  animation: pageIn .55s var(--lux-ease) both;
+}
+
+.auth-story {
+  position: relative;
+  overflow: hidden;
+  background:
+    linear-gradient(145deg, rgba(238, 241, 232, .92), rgba(246, 242, 232, .86)),
+    radial-gradient(circle at 12% 20%, rgba(184, 135, 69, .18), transparent 22rem);
+}
+
+.auth-story::before,
+.auth-story::after {
+  content: "";
+  position: absolute;
+  border-radius: 999px;
+  border: 1px solid rgba(33, 77, 59, .12);
+  background: rgba(255, 255, 255, .26);
+  box-shadow: inset 0 1px 18px rgba(255, 255, 255, .55);
+  pointer-events: none;
+}
+
+.auth-story::before {
+  width: 210px;
+  height: 210px;
+  right: 10%;
+  top: 12%;
+  animation: floatOrb 7s ease-in-out infinite;
+}
+
+.auth-story::after {
+  width: 120px;
+  height: 120px;
+  right: 24%;
+  bottom: 16%;
+  animation: floatOrb 8.5s ease-in-out infinite reverse;
+}
+
+.auth-story > * {
+  position: relative;
+  z-index: 1;
+}
+
+.auth-story h1,
+.welcome h1 {
+  letter-spacing: -.045em;
+}
+
+.auth-form {
+  width: min(480px, calc(100% - 36px));
+  border: 1px solid rgba(33, 77, 59, .12);
+  border-radius: 28px;
+  background: var(--lux-card);
+  box-shadow: var(--lux-shadow);
+  backdrop-filter: blur(22px);
+  animation: cardIn .7s var(--lux-ease) .08s both;
+}
+
+.auth-form form {
+  gap: 18px;
+}
+
+.text-button {
+  border-radius: 999px;
+}
+
+.text-button:hover:not(:disabled) {
+  color: var(--lux-accent);
+  background: rgba(33, 77, 59, .08);
+}
+
+.app-shell {
+  background:
+    radial-gradient(circle at 70% -10%, rgba(184, 135, 69, .16), transparent 30rem),
+    linear-gradient(180deg, rgba(251, 250, 246, .9), rgba(246, 244, 238, .9));
+  animation: pageIn .45s var(--lux-ease) both;
+}
+
+.sidebar {
+  border-right-color: var(--lux-line);
+  background: rgba(240, 241, 235, .76);
+  backdrop-filter: blur(20px);
+}
+
+.sidebar .wordmark {
+  transform-origin: left center;
+}
+
+.sidebar .wordmark:hover {
+  transform: translateX(2px);
+}
+
+.session-row {
+  margin-bottom: 6px;
+}
+
+.session-row > button:first-child {
+  border-radius: 14px;
+}
+
+.session-row > button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, .72);
+  transform: translateX(2px);
+}
+
+.selected {
+  color: var(--lux-accent);
+  background: rgba(33, 77, 59, .1) !important;
+  box-shadow: inset 3px 0 0 var(--lux-accent);
+}
+
+.chat-main > header {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: rgba(251, 250, 246, .78);
+  backdrop-filter: blur(18px);
+  border-bottom-color: var(--lux-line);
+}
+
+.catalog-tag {
+  background: rgba(255, 255, 255, .72);
+  box-shadow: var(--lux-shadow-soft);
+}
+
+.conversation {
+  scroll-padding-bottom: 160px;
+}
+
+.welcome {
+  animation: riseIn .65s var(--lux-ease) both;
+}
+
+.welcome h1 {
+  max-width: 780px;
+}
+
+.welcome > p:not(.eyebrow) {
+  font-size: clamp(16px, 1.7vw, 20px);
+}
+
+.suggestions {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.suggestions button {
+  min-height: 118px;
+  align-items: flex-start;
+  flex-direction: column;
+  justify-content: space-between;
+  border-color: rgba(33, 77, 59, .13);
+  border-radius: 22px;
+  background: var(--lux-card-strong);
+  box-shadow: var(--lux-shadow-soft);
+  backdrop-filter: blur(16px);
+  animation: cardIn .6s var(--lux-ease) both;
+}
+
+.suggestions button:nth-child(2) {
+  animation-delay: .07s;
+}
+
+.suggestions button:nth-child(3) {
+  animation-delay: .14s;
+}
+
+.suggestions button:hover:not(:disabled) {
+  transform: translateY(-5px);
+  border-color: rgba(184, 135, 69, .42);
+  box-shadow: 0 22px 54px rgba(23, 31, 27, .13);
+}
+
+.suggestions button span:last-child {
+  align-self: flex-end;
+}
+
+.suggestion-number {
+  color: var(--lux-accent-2);
+  font-weight: 700;
+}
+
+.principles span {
+  padding: 8px 12px;
+  border: 1px solid rgba(33, 77, 59, .12);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .52);
+}
+
+.message {
+  border-radius: 24px;
+  animation: messageIn .38s var(--lux-ease) both;
+}
+
+.message.assistant {
+  padding: 22px;
+  border: 1px solid rgba(33, 77, 59, .1);
+  background: rgba(255, 255, 255, .62);
+  box-shadow: var(--lux-shadow-soft);
+  backdrop-filter: blur(16px);
+}
+
+.message.user {
+  margin-left: auto;
+  max-width: 78%;
+  border-bottom: 0;
+  padding: 18px 22px;
+  background: rgba(33, 77, 59, .08);
+}
+
+.message-label {
+  color: var(--lux-accent);
+}
+
+.body-busy .message.assistant:last-of-type .message-text:empty::after,
+.body-busy .message.assistant:last-of-type .message-text:not(:empty)::after {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 1.1em;
+  margin-left: 4px;
+  vertical-align: text-bottom;
+  border-radius: 2px;
+  background: var(--lux-accent);
+  animation: cursorPulse .9s steps(2, start) infinite;
+}
+
+.product-grid {
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+}
+
+.product-card {
+  border-color: rgba(33, 77, 59, .12);
+  border-radius: 24px;
+  background: rgba(255, 255, 255, .9);
+  box-shadow: var(--lux-shadow-soft);
+}
+
+.product-card:hover {
+  transform: translateY(-6px);
+  box-shadow: 0 26px 62px rgba(23, 31, 27, .14);
+}
+
+.product-image {
+  background:
+    radial-gradient(circle at center, rgba(184, 135, 69, .11), transparent 58%),
+    #f4f2ec;
+}
+
+.product-image img {
+  transition: transform .35s var(--lux-ease);
+}
+
+.product-card:hover .product-image img {
+  transform: scale(1.045) rotate(-.6deg);
+}
+
+.price-row strong {
+  color: var(--lux-accent);
+}
+
+blockquote {
+  border-left-color: rgba(184, 135, 69, .58);
+  background: rgba(246, 242, 232, .52);
+  border-radius: 0 14px 14px 0;
+}
+
+.composer-wrap {
+  position: sticky;
+  bottom: 0;
+  z-index: 4;
+  background: linear-gradient(to top, rgba(251, 250, 246, .98) 75%, transparent);
+}
+
+.composer {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  padding: 0;
+}
+
+.composer:focus-within {
+  box-shadow: none;
+}
+
+.composer textarea {
+  border: 0;
+  border-bottom: 1px solid rgba(33, 77, 59, .22);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  padding-inline: 0;
+}
+
+.composer textarea:focus-visible {
+  border-color: var(--lux-accent);
+  box-shadow: 0 8px 0 -6px rgba(33, 77, 59, .18);
+  outline: 0;
+}
+
+#stop {
+  border-color: rgba(150, 62, 50, .2);
+  color: #963e32;
+  background: #fff4f1;
+}
+
+.error {
+  border: 1px solid rgba(150, 62, 50, .13);
+  animation: shakeSoft .3s var(--lux-ease) both;
+}
+
+.preferences {
+  border-color: rgba(33, 77, 59, .13);
+  border-radius: 24px;
+  background: var(--lux-card-strong);
+  box-shadow: var(--lux-shadow-soft);
+  backdrop-filter: blur(18px);
+  animation: panelDrop .28s var(--lux-ease) both;
+}
+
+@keyframes pageIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes riseIn {
+  from { opacity: 0; transform: translateY(18px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes cardIn {
+  from { opacity: 0; transform: translateY(18px) scale(.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes messageIn {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes panelDrop {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes floatOrb {
+  0%, 100% { transform: translate3d(0, 0, 0); }
+  50% { transform: translate3d(-12px, 16px, 0); }
+}
+
+@keyframes cursorPulse {
+  50% { opacity: 0; }
+}
+
+@keyframes shakeSoft {
+  0%, 100% { transform: translateX(0); }
+  35% { transform: translateX(-3px); }
+  70% { transform: translateX(3px); }
+}
+
+@media (max-width: 1100px) {
+  .auth-shell {
+    grid-template-columns: .95fr 1.05fr;
+  }
+
+  .auth-story {
+    padding-inline: 8%;
+  }
+
+  .suggestions {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 900px) {
+  .auth-shell {
+    display: flex;
+    min-height: auto;
+  }
+
+  .auth-story,
+  .auth-form {
+    min-height: 50dvh;
+  }
+
+  .auth-story {
+    justify-content: flex-start;
+  }
+
+  .app-shell {
+    grid-template-columns: 230px minmax(0, 1fr);
+  }
+
+  .message.user {
+    max-width: 92%;
+  }
+
+  .product-grid {
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  body {
+    font-size: 15px;
+  }
+
+  .auth-shell {
+    display: block;
+  }
+
+  .auth-story {
+    min-height: auto;
+    padding: 26px 22px 30px;
+  }
+
+  .auth-story .wordmark {
+    margin-bottom: 32px;
+  }
+
+  .auth-story h1 {
+    max-width: 420px;
+    font-size: clamp(42px, 13vw, 60px);
+  }
+
+  .auth-form {
+    width: calc(100% - 28px);
+    min-height: auto;
+    margin: -18px auto 24px;
+    padding: 28px 22px;
+    border-radius: 24px;
+  }
+
+  .app-shell {
+    display: flex;
+    flex-direction: column;
+    min-height: 100dvh;
+  }
+
+  .sidebar {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    border-bottom-color: var(--lux-line);
+    box-shadow: 0 14px 36px rgba(23, 31, 27, .08);
+  }
+
+  .sidebar-bottom {
+    align-items: center;
+  }
+
+  .chat-main > header {
+    top: auto;
+  }
+
+  .conversation {
+    padding-inline: 16px;
+  }
+
+  .welcome h1 {
+    font-size: clamp(46px, 15vw, 68px);
+  }
+
+  .principles {
+    gap: 8px;
+  }
+
+  .message,
+  .message.assistant,
+  .message.user {
+    max-width: 100%;
+    border-radius: 20px;
+  }
+
+  .composer-wrap {
+    padding-inline: 12px;
+  }
+
+  .composer {
+    border-radius: 20px;
+    align-items: stretch;
+  }
+
+  .composer textarea {
+    min-height: 62px;
+  }
+}
+
+@media (max-width: 460px) {
+  .auth-story,
+  .auth-form {
+    padding-inline: 18px;
+  }
+
+  .sidebar {
+    gap: 10px;
+  }
+
+  .new-chat {
+    min-width: 128px;
+  }
+
+  .chat-main > header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .product-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .composer {
+    display: grid;
+    grid-template-columns: 1fr auto;
+  }
+
+  .composer textarea {
+    grid-column: 1 / -1;
+  }
+
+  .composer .primary,
+  #stop {
+    min-height: 46px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: .001ms !important;
+  }
+}

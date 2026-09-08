@@ -113,6 +113,9 @@ def _public(document: Dict[str, Any], with_messages: bool = False) -> Dict[str, 
                 "content": m.get("content", ""),
                 "at": _iso(m.get("at")),
                 "sources": m.get("sources") or [],
+                "products": m.get("products") or [],
+                "citations": m.get("citations") or [],
+                "suggested_relaxations": m.get("suggested_relaxations") or [],
             }
             for m in document.get("messages") or []
         ]
@@ -297,3 +300,21 @@ async def delete_all(user_id: str) -> int:
     """Every session of one user - called when the account itself is deleted."""
     result = await database._guard(database.sessions().delete_many({"user_id": user_id}))
     return int(getattr(result, "deleted_count", 0) or 0)
+
+
+async def append_exchange(user_id: str, session_id: str, question: str, response: dict) -> bool:
+    """Save a completed pair atomically; failed/cancelled generations leave no half turn."""
+    oid = _oid(session_id)
+    if oid is None: return False
+    now = _now()
+    existing = await database._guard(database.sessions().find_one({"_id": oid, "user_id": user_id}, {"message_count": 1}))
+    if not existing: return False
+    fields = {"updated_at": now}
+    if not existing.get("message_count"): fields["title"] = title_from(question)
+    messages = [{"role": "user", "content": question, "at": now},
+                {"role": "assistant", "content": response["answer"], "at": now,
+                 **{k: response.get(k, []) for k in ("products", "citations", "suggested_relaxations")}}]
+    result = await database._guard(database.sessions().update_one({"_id": oid, "user_id": user_id},
+        {"$push": {"messages": {"$each": messages, "$slice": -min(MAX_SESSION_MESSAGES, 80)}},
+         "$set": fields, "$inc": {"message_count": 2}}))
+    return bool(result.matched_count)

@@ -7,6 +7,12 @@
 # ─── Python ─────────────────────────────────────────────────────────────────
 venv/
 .venv/
+.venv-app/
+node_modules/
+.next/
+*.tsbuildinfo
+playwright-report/
+test-results/
 env/
 __pycache__/
 *.py[cod]
@@ -24,16 +30,15 @@ dist/
 # builds their own.
 storage/
 
-# ─── Source documents ───────────────────────────────────────────────────────
-# The PDFs themselves stay out of the repo: they are large, often copyrighted, and
-# change independently of the code. Share them out of band (Drive, USB, S3).
+# ─── Source data ────────────────────────────────────────────────────────────
+# The Amazon Fashion 2023 JSONL dumps stay out of the repo: multi-gigabyte, publicly
+# downloadable, and unrelated to code changes. Share them out of band if needed.
 # data/.gitkeep is tracked so the folder exists after a fresh clone.
 data/*
 !data/.gitkeep
 
-# ─── Test & evaluation artifacts ────────────────────────────────────────────
+# ─── Test artifacts ─────────────────────────────────────────────────────────
 tests/fixtures/
-eval/runs/
 
 # ─── Logs & OS / editor junk ────────────────────────────────────────────────
 *.log
@@ -43,7 +48,5 @@ desktop.ini
 .vscode/
 .idea/
 
-# Local backups produced by scripts/backup.py - user data, never in git.
+# Local backups produced by scripts/backup.py - never in git.
 backups/
-# Draft eval questions awaiting human review.
-eval/golden_draft.json

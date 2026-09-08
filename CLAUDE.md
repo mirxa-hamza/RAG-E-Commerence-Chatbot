@@ -1,5 +1,19 @@
 # CLAUDE.md — working notes for this codebase
 
+## Current architecture takes precedence (2026-09-07)
+
+The user explicitly switched this project to LangChain. README.md and PLAN.md describe
+the current shopping assistant. The PDF-specific notes below are historical; their
+no-framework rule and document-owner catalog filters no longer govern the shopping app.
+Use `src/agent/` for provider models/prompts/tools, `src/api/shopping.py` for chat,
+`src/services/review_store.py` for shared LangChain Chroma reads, and `frontend/` for Next.js.
+Accounts and preferences remain private; never let the model choose a user/session ID.
+The running Phase 2 ingestion must finish before installing into its `venv`, changing its
+embedding/chunking code, or opening the same embedded index in another process.
+Application testing uses `.venv-app`. Tests use isolated data and fake models by default.
+
+## Historical PDF-RAG guidance
+
 Guidance for anyone (human or agent) changing this project. `README.md` explains what it
 does and how to run it; this file explains the rules that keep it correct.
 
@@ -10,9 +24,8 @@ machine**: extraction, semantic chunking, embedding, the vector store, keyword s
 re-ranking. Only the retrieved passages are sent out, to Groq or the Gemini API, to be
 written into prose.
 
-There is deliberately no LangChain or LlamaIndex. Every stage is plain Python you can read
-top to bottom. That is the point of the project; a change that hides a stage behind a
-framework is a change against its purpose.
+The former PDF implementation used plain Python. The current shopping agent uses LangChain
+by explicit user decision; preserve visible, testable preprocessing and ranking services.
 
 ## Architecture in one pass
 

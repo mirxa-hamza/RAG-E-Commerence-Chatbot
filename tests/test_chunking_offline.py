@@ -22,7 +22,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 os.environ.setdefault("JWT_SECRET", "offline-test-secret-not-used-anywhere-real")
 
 from src.services import chunking  # noqa: E402
-from src.services.pdf import sentences_with_pages  # noqa: E402
+from src.services.text import sentences_with_pages  # noqa: E402
 
 PASSED = 0
 FAILED = 0

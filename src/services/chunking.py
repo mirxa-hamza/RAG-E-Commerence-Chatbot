@@ -35,7 +35,7 @@ from src.core.config import (
     SEMANTIC_MIN_CHUNK_WORDS,
 )
 from src.core.logging import get_logger, timed
-from src.services.pdf import sentences_with_pages
+from src.services.text import sentences_with_pages
 
 log = get_logger(__name__)
 
@@ -335,7 +335,7 @@ def strategy_name() -> str:
 
 
 def chunk_pages(pages: List[Dict]) -> List[Dict]:
-    """Chunk a document. The only chunking entry point the pipeline should call."""
+    """Chunk a document. The only PDF-shaped chunking entry point the pipeline should call."""
     key = _cache_key(pages)
     if key in _cache:
         log.debug("Semantic chunks served from cache.")
@@ -347,3 +347,30 @@ def chunk_pages(pages: List[Dict]) -> List[Dict]:
     while len(_cache_order) > _CACHE_LIMIT:
         _cache.pop(_cache_order.pop(0), None)
     return chunks
+
+
+def chunk_review(text: str) -> List[str]:
+    """
+    Chunks one review's text (PLAN.md Phase 2). The e-commerce entry point: reuses
+    semantic_chunks()'s sentence-splitting and breakpoint-detection machinery, but drops
+    the page bookkeeping chunk_pages() carries - a review has no pages - and returns plain
+    strings rather than {"text", "page_start", "page_end"} dicts.
+
+    Most Amazon reviews are a few sentences long, so this short-circuits straight to "one
+    review = one chunk" for anything at or under SEMANTIC_MIN_CHUNK_WORDS: a two-sentence
+    review has no room for a topic change, and per-sentence embedding + breakpoint
+    detection on it would be pure overhead. Only a genuinely long review runs the full
+    semantic_chunks() logic below.
+
+    Not memoized like chunk_pages(): ingestion runs once per review, not repeatedly
+    against the same text on every request, so there is nothing here worth caching.
+    """
+    text = text.strip()
+    if not text:
+        return []
+    if len(text.split()) <= SEMANTIC_MIN_CHUNK_WORDS:
+        return [text]
+
+    # semantic_chunks() wants {"page", "text"} dicts; a review is a single fake "page".
+    chunks = semantic_chunks([{"page": 0, "text": text}], max_words=SEMANTIC_MAX_CHUNK_WORDS)
+    return [c["text"] for c in chunks]

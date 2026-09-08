@@ -79,7 +79,6 @@ async def get_session(session_id: str, user: dict = Depends(get_current_user)):
     return found
 
 
-@router.post("/{session_id}/messages", status_code=201)
 async def add_message(session_id: str, body: MessageIn,
                       user: dict = Depends(get_current_user)):
     saved = await sessions.append_message(user_id_of(user), session_id, body.role,

@@ -33,6 +33,25 @@ _collection = None
 _store_lock = threading.Lock()
 
 
+def _metadata_value(value):
+    """Return a Chroma-compatible metadata scalar, or None to omit the key."""
+    if value is None:
+        return None
+    if isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
+
+
+def _clean_metadata(metadata: Dict) -> Dict:
+    """Chroma accepts only scalar metadata values; it rejects None."""
+    out = {}
+    for key, value in (metadata or {}).items():
+        clean = _metadata_value(value)
+        if clean is not None:
+            out[key] = clean
+    return out
+
+
 def _get_collection():
     # cosine similarity is the standard choice for sentence-transformers output
     return _client.get_or_create_collection(
@@ -227,6 +246,59 @@ def add_chunks(source_name: str, chunks: List[Dict], on_progress=None,
 
     _invalidate_keyword_index(user_id)
     return stored
+
+
+def add_review_chunks(ids: List[str], texts: List[str], metadatas: List[Dict],
+                      on_progress=None) -> int:
+    """
+    Embeds and stores e-commerce review chunks (PLAN.md Phase 2), batched.
+
+    Unlike add_chunks() above (the PDF pipeline's writer, still used by the legacy
+    /chat retrieval path until Phase 4 replaces it with the agentic router), review
+    chunks carry no page range and no per-user owner - the product catalog is shared and
+    read-only, not owned by whoever "uploaded" it, because nobody did. So ids and metadata
+    are whatever the caller (services/ecommerce_ingest.py) built - typically
+    {parent_asin, review_id, rating, review_title, timestamp, chunk_index} - rather than a
+    fixed PDF-shaped schema, and the caller owns id uniqueness across the whole batch.
+
+    `on_progress(stored)` is called after each batch, mirroring add_chunks()'s callback
+    shape minus the "total" argument - ecommerce_ingest.py streams the source files rather
+    than knowing the total chunk count up front.
+    """
+    if not texts:
+        return 0
+
+    warn_if_truncated(texts)
+    stored = 0
+    for offset in range(0, len(texts), CHROMA_ADD_BATCH):
+        batch_ids = ids[offset:offset + CHROMA_ADD_BATCH]
+        batch_texts = texts[offset:offset + CHROMA_ADD_BATCH]
+        batch_meta = metadatas[offset:offset + CHROMA_ADD_BATCH]
+
+        with timed(log, f"embed batch {offset}-{offset + len(batch_texts)} of review chunks"):
+            embeddings = embed_passages(batch_texts)
+
+        _col().add(ids=batch_ids, embeddings=embeddings, documents=batch_texts,
+                  metadatas=[_clean_metadata(meta) for meta in batch_meta])
+        stored += len(batch_texts)
+        if on_progress:
+            try:
+                on_progress(stored)
+            except Exception:  # a broken reporter must never abort an ingest
+                log.exception("Progress callback failed")
+
+    return stored
+
+
+def delete_product_chunks(parent_asin: str) -> None:
+    """Removes every review chunk belonging to one product - used to re-ingest a changed one."""
+    _col().delete(where={"parent_asin": parent_asin})
+
+
+def product_chunk_count(parent_asin: str) -> int:
+    """How many review chunks are currently stored for one product. Cheap: no documents read."""
+    got = _col().get(where={"parent_asin": parent_asin}, include=[])
+    return len(got.get("ids") or [])
 
 
 def delete_source(source_name: str, user_id: Optional[str] = None) -> None:

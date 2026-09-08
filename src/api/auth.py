@@ -3,10 +3,6 @@ Signup, login, and "who am I".
 
 These are the only unauthenticated routes in the application. Everything else depends on
 `get_current_user`.
-
-Signup also runs the one-off adoption of pre-auth documents: PDFs that were indexed before
-accounts existed have no owner, and would otherwise be invisible to everyone forever. The
-first account to be created adopts them (see services/ownership.py).
 """
 from fastapi import APIRouter, HTTPException, Request, status
 
@@ -21,7 +17,7 @@ from src.models.schemas import (
     TokenResponse,
     UserPublic,
 )
-from src.services import database, ownership, security, sessions
+from src.services import database, security, sessions
 
 from fastapi import Depends
 
@@ -73,8 +69,6 @@ async def signup(credentials: SignupCredentials, request: Request):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT,
                             detail="That username is already taken.")
 
-    first_account = await database.count_users() == 0
-
     try:
         user = await database.create_user(username, security.hash_password(credentials.password),
                                           name=name)
@@ -84,12 +78,6 @@ async def signup(credentials: SignupCredentials, request: Request):
 
     log.info("Created account '%s'", username)
     await database.record_audit(user_id_of(user), username, "signup")
-
-    if first_account:
-        # Runs once, ever: hand the pre-auth corpus to the first person through the door.
-        adopted = ownership.adopt_unowned_documents(user_id_of(user))
-        if adopted:
-            log.info("Adopted %d pre-existing document(s) into '%s'", adopted, username)
 
     return security.create_access_token(user_id_of(user), user["username"],
                                        user.get("token_version", 1), name=user.get("name"))
@@ -172,12 +160,13 @@ async def signout_everywhere(user: dict = Depends(get_current_user)):
 @router.delete("/me")
 async def delete_account(body: ConfirmPassword, user: dict = Depends(get_current_user)):
     """
-    Deletes the account and everything it owns: PDFs, chunks, manifest entries.
+    Deletes the account and its conversation history.
 
-    Order matters. Documents go first, then the account: a failure half way leaves an
-    account that can sign in and retry, whereas deleting the account first would strand
-    every document under an id that no longer resolves - invisible and undeletable, which
-    is exactly the state this endpoint exists to prevent.
+    There is no per-user document store to unwind here (the product catalog is shared,
+    read-only, and identical for every account) - that is what made the old
+    services/ownership.py module dead weight once the PDF-upload feature was retired for
+    the e-commerce pivot (see PLAN.md). Chat history is still real per-user data, so it
+    goes with the account.
     """
     if not security.verify_password(body.password, user.get("password_hash", "")):
         # 403 for the same reason as the password change above: the session is fine, the
@@ -186,14 +175,12 @@ async def delete_account(body: ConfirmPassword, user: dict = Depends(get_current
                             detail="That is not your password.")
 
     uid = user_id_of(user)
-    removed = ownership.delete_all_documents(uid)
     # The conversations go with the account. Leaving them behind would keep a person's
     # questions - and the passages quoted back to them - in the database after they asked
     # for everything to be deleted.
     conversations = await sessions.delete_all(uid)
     await database.delete_user(uid)
     await database.record_audit(uid, user["username"], "account_deleted",
-                                f"{removed} document(s), {conversations} conversation(s)")
-    log.info("Deleted account '%s', %d document(s) and %d conversation(s)",
-             user["username"], removed, conversations)
-    return {"deleted": True, "documents_removed": removed}
+                                f"{conversations} conversation(s)")
+    log.info("Deleted account '%s' and %d conversation(s)", user["username"], conversations)
+    return {"deleted": True}

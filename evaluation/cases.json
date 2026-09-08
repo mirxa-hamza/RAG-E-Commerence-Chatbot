@@ -1,0 +1,6 @@
+[
+  {"question":"Find black dresses under $40", "max_price":40, "min_products":1},
+  {"question":"Find shoes rated at least 4 out of 5", "min_rating":4, "min_products":1},
+  {"question":"I wear size M. Remember this for future conversations.", "preference":{"clothing_size":"M"}},
+  {"question":"Remember that I prefer simple understated styles, nothing flashy.", "required_preference_field":"style_notes"}
+]
