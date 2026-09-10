@@ -213,7 +213,8 @@ function messageNode(message, index) {
   label.textContent = message.role === "user" ? "You" : "FitFinder AI";
   const text = document.createElement("p");
   text.className = "message-text";
-  text.textContent = message.content || (state.busy && index === state.messages.length - 1 ? (state.status === "generating" ? "Writing the answer from retrieved evidence..." : "Retrieving catalog and review evidence...") : "");
+  const content = message.content || (state.busy && index === state.messages.length - 1 ? (state.status === "generating" ? "Writing the answer from retrieved evidence..." : "Retrieving catalog and review evidence...") : "");
+  renderMessageText(text, content, message.role === "assistant");
   article.append(label, text);
   if (message.products?.length) {
     const grid = document.createElement("div");
@@ -250,6 +251,61 @@ function messageNode(message, index) {
     article.append(row);
   }
   return article;
+}
+
+// Render the small Markdown subset emitted by the answer finalizer without
+// inserting raw model output into innerHTML. This keeps formatting readable
+// while avoiding an XSS risk from model-generated content.
+function renderMessageText(node, value, markdown = false) {
+  node.replaceChildren();
+  const content = String(value || "");
+  if (!markdown || !content) {
+    node.textContent = content;
+    return;
+  }
+
+  const lines = content.replace(/\r\n?/g, "\n").split("\n");
+  let list = null;
+  const closeList = () => {
+    if (list) {
+      node.append(list);
+      list = null;
+    }
+  };
+
+  lines.forEach((line, index) => {
+    const bullet = line.match(/^\s*[-*•]\s+(.*)$/);
+    if (bullet) {
+      if (!list) list = document.createElement("ul");
+      const item = document.createElement("li");
+      appendInlineMarkdown(item, bullet[1]);
+      list.append(item);
+      return;
+    }
+    closeList();
+    if (!line.trim()) return;
+    const paragraph = document.createElement("span");
+    paragraph.className = "message-paragraph";
+    appendInlineMarkdown(paragraph, line);
+    node.append(paragraph);
+    if (index < lines.length - 1) node.append(document.createElement("br"));
+  });
+  closeList();
+}
+
+function appendInlineMarkdown(node, value) {
+  const source = String(value || "");
+  const pattern = /\*\*(.+?)\*\*/g;
+  let cursor = 0;
+  let match;
+  while ((match = pattern.exec(source))) {
+    if (match.index > cursor) node.append(document.createTextNode(source.slice(cursor, match.index)));
+    const strong = document.createElement("strong");
+    strong.textContent = match[1];
+    node.append(strong);
+    cursor = match.index + match[0].length;
+  }
+  if (cursor < source.length) node.append(document.createTextNode(source.slice(cursor)));
 }
 
 function productCard(product) {
@@ -309,9 +365,9 @@ function renderLiveReply(reply) {
   }
   const text = article.querySelector(".message-text");
   if (!text) return;
-  text.textContent = reply.content || (state.status === "generating"
+  renderMessageText(text, reply.content || (state.status === "generating"
     ? "Writing the answer from retrieved evidence..."
-    : "Retrieving catalog and review evidence...");
+    : "Retrieving catalog and review evidence..."), true);
   conversation.scrollTop = conversation.scrollHeight;
 }
 

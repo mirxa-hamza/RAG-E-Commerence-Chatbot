@@ -659,3 +659,7 @@ blockquote {
     transition-duration: .001ms !important;
   }
 }
+/* Assistant Markdown lists rendered by app.js. */
+.message-text ul { margin: 0 0 14px; padding-left: 24px; }
+.message-text li { margin: 0 0 10px; }
+.message-text strong { font-weight: 700; }
