@@ -313,6 +313,9 @@ async def append_exchange(user_id: str, session_id: str, question: str, response
     if not existing.get("message_count"): fields["title"] = title_from(question)
     messages = [{"role": "user", "content": question, "at": now},
                 {"role": "assistant", "content": response["answer"], "at": now,
+                 # active_filters is what lets the NEXT turn continue this search rather
+                 # than read a bare "under $40" as an entirely new one.
+                 "active_filters": response.get("active_filters") or {},
                  **{k: response.get(k, []) for k in ("products", "citations", "suggested_relaxations")}}]
     result = await database._guard(database.sessions().update_one({"_id": oid, "user_id": user_id},
         {"$push": {"messages": {"$each": messages, "$slice": -min(MAX_SESSION_MESSAGES, 80)}},

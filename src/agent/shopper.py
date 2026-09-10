@@ -6,7 +6,7 @@ from langchain.agents import create_agent
 from langchain.agents.middleware import (ClearToolUsesEdit, ContextEditingMiddleware,
                                          ModelCallLimitMiddleware, ModelRetryMiddleware,
                                          SummarizationMiddleware)
-from langchain.agents.structured_output import ProviderStrategy, ToolStrategy
+from langchain.agents.structured_output import ToolStrategy
 from langgraph.errors import GraphRecursionError
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.store.memory import InMemoryStore
@@ -33,6 +33,9 @@ def hydrate(draft: AnswerDraft, evidence: Evidence, session_id: str) -> Shopping
     for product in products:
         cited = next((c for c in citations if c["parent_asin"] == product["parent_asin"]), None)
         if cited: product["review_excerpt"] = cited["excerpt"]
+    # What this turn actually searched for, so the next turn can keep building on it.
+    active = next((s["applied_filters"] for s in reversed(evidence.searches)
+                   if s.get("applied_filters")), {})
     if evidence.searches and all(s["count"] == 0 for s in evidence.searches) and not products:
         filters = evidence.searches[-1]["applied_filters"]
         constraints = _human_constraints(filters)
@@ -40,10 +43,12 @@ def hydrate(draft: AnswerDraft, evidence: Evidence, session_id: str) -> Shopping
         # a plausible fictional price, even when its prose ignores the system prompt.
         return ShoppingResponse(session_id=session_id,
             answer=f"No catalog products matched {constraints or 'this search'}. Would you like to broaden the search or relax one constraint?",
-            suggested_relaxations=["Try a broader category", "Adjust the price limit"])
+            suggested_relaxations=["Try a broader category", "Adjust the price limit"],
+            active_filters=active)
     answer = _ground_product_claims(draft.answer, products)
     return ShoppingResponse(session_id=session_id, answer=answer, products=products,
-                            citations=citations, suggested_relaxations=draft.suggested_relaxations)
+                            citations=citations, suggested_relaxations=draft.suggested_relaxations,
+                            active_filters=active)
 
 
 def _ground_product_claims(answer: str, products: list[dict]) -> str:
@@ -99,10 +104,22 @@ def history_messages(messages: list[dict]) -> list[dict]:
         content = m.get("content", "")
         if m.get("products"):
             content += "\nPreviously shown product IDs: " + json.dumps([p["parent_asin"] for p in m["products"]])
+        if m.get("active_filters"):
+            # The prose alone does not say what was actually searched, so a follow-up
+            # like "under $40" has nothing to attach itself to without this line.
+            content += "\nSearch filters used: " + json.dumps(m["active_filters"], default=str)
         if len(content) > budget: break
         selected.append({"role": m["role"], "content": content})
         budget -= len(content)
     return list(reversed(selected))
+
+
+def previous_filters(history: list) -> dict:
+    """The filters behind the most recent catalog search in this conversation."""
+    for message in reversed(history or []):
+        if message.get("role") == "assistant" and message.get("active_filters"):
+            return message["active_filters"]
+    return {}
 
 
 class DraftStream:
@@ -159,11 +176,6 @@ def _middleware(model):
     ]
 
 
-def _structured_response_strategy(injected_model: bool):
-    # Fake/scripted test models emit AnswerDraft as a normal tool call. Real hosted
-    # providers use the schema-only finalizer below because Groq rejects JSON mode
-    # when the same request also contains function tools.
-    return ToolStrategy(AnswerDraft, handle_errors=True) if injected_model else ProviderStrategy(AnswerDraft)
 
 
 def _evidence_for_finalizer(evidence: Evidence) -> str:
@@ -175,13 +187,33 @@ def _evidence_for_finalizer(evidence: Evidence) -> str:
     }, ensure_ascii=True, default=str)[:config.MAX_CONTEXT_CHARS]
 
 
-async def _finalize_real_model(model, question: str, evidence: Evidence, saved: dict) -> AnswerDraft:
+def _conversation_context(history: list) -> str:
+    """The recent turns, as text the answer writer can actually read.
+
+    The tool loop is seeded with these messages, but the two_phase finalizer is a
+    SEPARATE call with its own prompt - so without this the model that writes the prose
+    has no idea what was already said, and every follow-up ("show me cheaper ones",
+    "what about the second one") reads as a brand new conversation.
+    """
+    turns = history_messages(history)
+    if not turns:
+        return "(this is the first message in the conversation)"
+    return "\n".join(f"{m['role']}: {m['content']}" for m in turns)
+
+
+async def _finalize_real_model(model, question: str, evidence: Evidence, saved: dict,
+                               session_id: str, history: list, on_token=None, on_status=None) -> AnswerDraft:
     """Create the structured draft after the tool-enabled agent has finished.
 
     Groq does not allow response_format=json_* on a request that also contains
-    function tools.  This call has no tools, so native JSON schema is safe.
+    function tools, which is why this is a second call with none bound but AnswerDraft
+    itself. Without this streaming, a two_phase turn is a silent wait followed by one
+    giant answer chunk - so when a token callback is given, force AnswerDraft as a tool
+    call and stream its arguments through the same DraftStream decoder the merged/tool-loop
+    path already uses, rather than block on a plain non-streaming structured call.
     """
-    structured = model.with_structured_output(AnswerDraft, method="json_schema")
+    if on_status:
+        on_status("generating")
     prompt = (
         "Return an AnswerDraft for the user's request. Use only the supplied evidence; "
         "never invent product or citation IDs. Select product_ids and citation_ids from "
@@ -189,11 +221,50 @@ async def _finalize_real_model(model, question: str, evidence: Evidence, saved: 
         "be polished, human-friendly shopping prose: do not output JSON, Python lists, "
         "internal field names, raw filters, or tool arguments. Use natural phrases such as "
         "'black dresses under $40' instead of repr-style arrays.\n"
+        "Read the conversation so far before answering: resolve references like 'those', "
+        "'the second one' or 'cheaper' against it, and do not reintroduce what the shopper "
+        "already knows.\n"
+        f"Conversation so far:\n{_conversation_context(history)}\n"
         f"User request: {question}\n"
-        f"Saved preferences: {json.dumps(saved, ensure_ascii=True)}\n"
+        f"Saved preferences and memories: {json.dumps(saved, ensure_ascii=True)}\n"
         f"Evidence: {_evidence_for_finalizer(evidence)}"
     )
-    return await structured.ainvoke([{"role": "user", "content": prompt}])
+    messages = [{"role": "user", "content": prompt}]
+    if on_token is None:
+        structured = model.with_structured_output(AnswerDraft, method="json_schema")
+        return await structured.ainvoke(messages)
+    try:
+        bound = model.bind_tools([AnswerDraft], tool_choice="AnswerDraft")
+    except (TypeError, NotImplementedError):
+        # Not every provider accepts a forced tool_choice; fall back to letting it pick
+        # among the one tool it was given, which amounts to the same thing in practice.
+        bound = model.bind_tools([AnswerDraft])
+    stream = DraftStream(evidence, session_id, on_token)
+    accumulated = None
+    async for chunk in bound.astream(messages):
+        accumulated = chunk if accumulated is None else accumulated + chunk
+        stream.accept(chunk, {"langgraph_node": "model"})
+    if accumulated is not None and len(accumulated.tool_calls) == 1 and accumulated.tool_calls[0]["name"] == "AnswerDraft":
+        parser = PydanticToolsParser(tools=[AnswerDraft], first_tool_only=True)
+        draft = parser.parse_result([ChatGeneration(message=accumulated)])
+        if draft is not None:
+            return draft
+    # The provider ignored the forced tool call (see langchain-ai/langchain#34155) or
+    # streamed something unparseable - fall back to one plain, non-streamed structured
+    # call rather than surface a broken or empty answer.
+    structured = model.with_structured_output(AnswerDraft, method="json_schema")
+    return await structured.ainvoke(messages)
+
+
+def _use_agent_structured_output(injected_model: bool) -> bool:
+    """Whether THIS turn's create_agent() call should bind AnswerDraft as a tool-strategy
+    response_format, instead of running the separate two-phase finalize call above.
+
+    Always true for injected/test models (DraftStream already decodes their in-loop
+    AnswerDraft tool call). For real providers this is gated by AGENT_RESPONSE_STRATEGY -
+    see its definition in src/core/config.py for the tradeoff.
+    """
+    return injected_model or config.AGENT_RESPONSE_STRATEGY == "merged"
 
 
 async def _checkpoint_config(user_id: str, session_id: str, history: list[dict], injected_model: bool):
@@ -214,24 +285,29 @@ async def answer(user_id: str, session_id: str, question: str, history: list[dic
         if config.AGENT_CHECKPOINTING_ENABLED:
             await _STORE.aput(("shopping", user_id), "preferences", saved, index=False)
         checkpoint_options, seed_history = await _checkpoint_config(user_id, session_id, history, injected_model)
-        # Hosted Groq models cannot combine native JSON response_format with tools.
-        # Run the real agent without a response schema, then finalize in a separate
-        # schema-only request. Injected test models retain the original tool schema.
+        # Hosted Groq models cannot combine native JSON response_format with tools, so the
+        # default ('two_phase') runs the tool-enabled agent without a response schema and
+        # finalizes separately below. AGENT_RESPONSE_STRATEGY=merged (and every injected
+        # test model) binds AnswerDraft as a tool-strategy response_format on THIS same
+        # call instead, saving one full model round-trip - see config.py for the tradeoff.
         real_provider = not injected_model
-        agent = create_agent(model=active_model, tools=create_tools(user_id, evidence),
-                             system_prompt=system_prompt(saved, structured=not real_provider),
+        use_agent_structured_output = _use_agent_structured_output(injected_model)
+        agent = create_agent(model=active_model,
+                             tools=create_tools(user_id, evidence, previous_filters(history)),
+                             system_prompt=system_prompt(saved, structured=use_agent_structured_output),
                              middleware=_middleware(active_model),
                              checkpointer=None if injected_model or not config.AGENT_CHECKPOINTING_ENABLED else _CHECKPOINTER,
                              store=None if not config.AGENT_CHECKPOINTING_ENABLED else _STORE,
-                             response_format=_structured_response_strategy(injected_model) if not real_provider else None)
+                             response_format=ToolStrategy(AnswerDraft, handle_errors=True) if use_agent_structured_output else None)
         # Middleware adds graph nodes. The model-call middleware enforces the actual
         # call budget; the larger graph cap only guards unexpected graph-level cycles.
+        stream_from_agent = on_token is not None and use_agent_structured_output
         with tracing_context(enabled=config.AGENT_TRACING_ENABLED):
             try:
                 inputs = {"messages": seed_history + [{"role": "user", "content": question}]}
                 options = {"recursion_limit": 8*(config.AGENT_MAX_TOOL_ROUNDTRIPS+1)+8, **checkpoint_options}
-                if on_token is None or real_provider:
-                    if on_status: on_status("generating")
+                if not stream_from_agent:
+                    if on_status: on_status("generating" if use_agent_structured_output else "retrieving")
                     result = await agent.ainvoke(inputs, options)
                 else:
                     result = {}
@@ -251,10 +327,11 @@ async def answer(user_id: str, session_id: str, question: str, history: list[dic
                                     result["structured_response"] = update["structured_response"]
             except GraphRecursionError:
                 return ShoppingResponse(session_id=session_id, answer="I reached the search limit for this turn. Please narrow the category or ask about one product.")
-        if real_provider:
-            draft = await _finalize_real_model(active_model, question, evidence, saved)
-            if on_token:
-                on_token(draft.answer)
+        if not use_agent_structured_output:
+            # two_phase: the loop above only gathered evidence. Ask for the validated
+            # answer in one more call, streamed through on_token when one was given.
+            draft = await _finalize_real_model(active_model, question, evidence, saved,
+                                               session_id, history, on_token, on_status)
             return hydrate(draft, evidence, session_id)
         if not result.get("structured_response"):
             return ShoppingResponse(session_id=session_id, answer="I reached the search limit for this turn. Please narrow the category or ask about one product.")

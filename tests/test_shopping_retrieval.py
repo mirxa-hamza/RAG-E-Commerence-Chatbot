@@ -28,7 +28,6 @@ def test_shared_reviews_retain_identity_and_expand_only_same_review(monkeypatch)
     try:
         store.add_texts(texts=texts, metadatas=meta, ids=ids)
         monkeypatch.setattr(review_search, "get_store", lambda:store)
-        monkeypatch.setattr(review_search, "_cache", None)
         monkeypatch.setattr(review_search.config, "HYBRID_ENABLED", True)
         monkeypatch.setattr(review_search.config, "RERANK_ENABLED", True)
         monkeypatch.setattr(review_search.config, "NEIGHBOR_EXPANSION", 1)

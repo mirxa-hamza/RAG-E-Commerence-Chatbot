@@ -263,7 +263,13 @@ if AGENT_MAX_TOOL_ROUNDTRIPS < 1:
     raise ValueError(
         f"AGENT_MAX_TOOL_ROUNDTRIPS must be at least 1, got {AGENT_MAX_TOOL_ROUNDTRIPS}"
     )
-AGENT_CHECKPOINTING_ENABLED = _flag("AGENT_CHECKPOINTING_ENABLED", "true")
+# LangGraph's in-process checkpointer/store for short-term agent state. Off by default:
+# InMemorySaver and InMemoryStore are module-level singletons that keep every thread's
+# messages for the LIFE OF THE PROCESS with no eviction, so a long-running server grows
+# without bound. MongoDB is the durable record of sessions and preferences either way,
+# and history_messages() reseeds the conversation from it, so turning this off costs
+# nothing a user can see. Turn it on only with a persistent, evicting checkpointer.
+AGENT_CHECKPOINTING_ENABLED = _flag("AGENT_CHECKPOINTING_ENABLED", "false")
 AGENT_MODEL_RETRIES = int(os.getenv("AGENT_MODEL_RETRIES", "2"))
 AGENT_MODEL_RETRY_INITIAL_DELAY_SECONDS = float(os.getenv("AGENT_MODEL_RETRY_INITIAL_DELAY_SECONDS", "0.5"))
 AGENT_MODEL_RETRY_MAX_DELAY_SECONDS = float(os.getenv("AGENT_MODEL_RETRY_MAX_DELAY_SECONDS", "8"))
@@ -413,3 +419,40 @@ if AGENT_TIMEOUT_SECONDS <= 0:
     raise ValueError("AGENT_TIMEOUT_SECONDS must be positive")
 if APP_WARMUP_DELAY_SECONDS < 0:
     raise ValueError("APP_WARMUP_DELAY_SECONDS cannot be negative")
+
+# ---------------------------------------------------------------- Response strategy (speed)
+# 'two_phase' (default, safest): the tool-enabled agent loop only gathers evidence; a
+# SEPARATE model call afterwards asks for the validated AnswerDraft. This exists because
+# Groq rejects native JSON mode on a request that also carries function tools.
+# 'merged': ask that SAME tool-enabled call to also emit AnswerDraft as just another bound
+# tool (LangChain's ToolStrategy), cutting one full model round-trip - typically the
+# single biggest latency win available, since each round-trip is a full network call to
+# the provider. Some hosted models are unreliable at obeying a forced tool call mixed in
+# with several others (see langchain-ai/langchain#34155) - measure 'merged' against your
+# own model/API key (compare timings and answer quality) before trusting it in production.
+AGENT_RESPONSE_STRATEGY = os.getenv("AGENT_RESPONSE_STRATEGY", "two_phase").strip().lower()
+if AGENT_RESPONSE_STRATEGY not in ("two_phase", "merged"):
+    raise ValueError(
+        f"AGENT_RESPONSE_STRATEGY must be 'two_phase' or 'merged', got {AGENT_RESPONSE_STRATEGY!r}"
+    )
+
+# Most chunks the lexical half of review search pulls back from the store for one
+# question before BM25 ranks them (src/services/review_search.py).
+#
+# This replaced an in-process BM25 index over the WHOLE collection, which at 308k review
+# chunks cost gigabytes of resident Python tokens, a rebuild measured in minutes that
+# blocked every concurrent review query behind one lock, and a full-corpus sort per
+# question. Chroma filters documents on disk; only the survivors are scored here. Raise
+# it for more lexical recall at a linear cost in per-question CPU, and note that it is a
+# ceiling, not a target - most questions match far fewer chunks than this.
+KEYWORD_CANDIDATE_LIMIT = int(os.getenv("KEYWORD_CANDIDATE_LIMIT", "300"))
+if KEYWORD_CANDIDATE_LIMIT < 1:
+    raise ValueError(f"KEYWORD_CANDIDATE_LIMIT must be at least 1, got {KEYWORD_CANDIDATE_LIMIT}")
+
+# Most free-form memories carried into the prompt for one account (see
+# src/services/preferences.py). Memory is only useful if the model reads it, and it reads
+# it by spending context on it on EVERY model call, so this is a running cost per
+# question, not just storage. Twenty short notes is a lot of remembered context.
+MEMORY_MAX_ENTRIES = int(os.getenv("MEMORY_MAX_ENTRIES", "20"))
+if MEMORY_MAX_ENTRIES < 1:
+    raise ValueError(f"MEMORY_MAX_ENTRIES must be at least 1, got {MEMORY_MAX_ENTRIES}")

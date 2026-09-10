@@ -55,8 +55,20 @@ class Budget(StrictModel):
         return self
 
 
+# Fields holding several values, updated with add/remove rather than set. "memories" is
+# the free-form one: short notes about the shopper worth recalling in a LATER
+# conversation, as opposed to the typed fields beside it, which catalog search can
+# actually filter on.
+LIST_FIELDS = ("color_preference", "favorite_brands", "memories")
+# Per-field text ceilings. A memory is a sentence, not an essay: everything stored here is
+# read back into the prompt on every model call, so length is a running cost per question.
+_MAX_TEXT = {"style_notes": 500, "memories": 300}
+_DEFAULT_MAX_TEXT = 80
+
+
 class PreferenceUpdate(StrictModel):
-    field: Literal["clothing_size", "budget", "style_notes", "color_preference", "favorite_brands"]
+    field: Literal["clothing_size", "budget", "style_notes", "color_preference",
+                   "favorite_brands", "memories"]
     action: Literal["set", "add", "remove", "clear"]
     value: str | Budget | None = None
 
@@ -66,7 +78,7 @@ class PreferenceUpdate(StrictModel):
             if self.value is not None:
                 raise ValueError("Clear does not accept a value")
             return self
-        if self.field in ("color_preference", "favorite_brands"):
+        if self.field in LIST_FIELDS:
             if self.action not in ("add", "remove"):
                 raise ValueError("List preferences use add/remove/clear")
         elif self.action != "set":
@@ -74,7 +86,7 @@ class PreferenceUpdate(StrictModel):
         if self.field == "budget":
             if not isinstance(self.value, Budget):
                 raise ValueError("Budget must contain min and/or max")
-        elif not isinstance(self.value, str) or not self.value.strip() or len(self.value) > (500 if self.field == "style_notes" else 80):
+        elif not isinstance(self.value, str) or not self.value.strip() or len(self.value) > _MAX_TEXT.get(self.field, _DEFAULT_MAX_TEXT):
             raise ValueError("Preference text is empty or too long")
         return self
 
@@ -116,3 +128,7 @@ class ShoppingResponse(StrictModel):
     products: list[Product] = Field(default_factory=list)
     citations: list[Citation] = Field(default_factory=list)
     suggested_relaxations: list[str] = Field(default_factory=list)
+    # The filters behind this turn's catalog search, carried so the NEXT turn can
+    # continue the same search. "under $40" is a constraint with no subject; without
+    # this it is searched literally and returns anything cheap.
+    active_filters: dict = Field(default_factory=dict)

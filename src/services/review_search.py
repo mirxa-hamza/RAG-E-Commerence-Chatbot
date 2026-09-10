@@ -1,7 +1,6 @@
 """Hybrid review retrieval with identity based on review_id AND chunk_index."""
 import re
-import threading
-import time
+from collections import Counter
 from src.agent.schemas import ReviewQuery
 from src.core import config
 from src.core.logging import get_logger
@@ -9,8 +8,14 @@ from src.ml import reranker
 from src.services.review_store import get_store
 
 log = get_logger(__name__)
-_cache = None
-_lock = threading.Lock()
+
+# Words that carry no lexical signal worth a literal document lookup. Kept deliberately
+# small: this only decides which terms are worth asking the store about, and a term that
+# slips through costs one extra substring filter, not a wrong answer.
+_STOPWORDS = frozenset("""
+a an and are as at be but by do does for from has have how i in is it its me my of on
+or should that the their them there these they this to was were what when where which
+who why will with you your about any can could would""".split())
 
 
 def where_filter(q: ReviewQuery):
@@ -29,25 +34,55 @@ def tokens(text):
     return re.findall(r"\w+", text.lower())
 
 
-def keyword_rows(store):
-    global _cache
-    count = store._collection.count()
-    with _lock:
-        if _cache is None or _cache[0] != count or time.monotonic() - _cache[3] > 300:
-            from rank_bm25 import BM25Okapi
-            rows = []
-            for offset in range(0, count, 1000):
-                got = store.get(limit=1000, offset=offset, include=["documents", "metadatas"])
-                rows.extend(row(t, m, i) for t, m, i in zip(got["documents"], got["metadatas"], got["ids"]))
-            _cache = (count, rows, BM25Okapi([tokens(r["text"]) for r in rows]) if rows else None, time.monotonic())
-        return _cache[1:3]
+def keyword_terms(question: str, limit: int = 6) -> list:
+    """The content words from a question that are worth a literal document lookup."""
+    picked = []
+    for term in tokens(question):
+        if len(term) < 3 or term in _STOPWORDS or term in picked:
+            continue
+        picked.append(term)
+        if len(picked) >= limit:
+            break
+    return picked
 
 
-def matches(r, q):
-    rating = r.get("rating")
-    return ((not q.product_ids or r.get("parent_asin") in q.product_ids)
-            and (q.min_rating is None or rating is not None and rating >= q.min_rating)
-            and (q.max_rating is None or rating is not None and rating <= q.max_rating))
+def keyword_candidates(store, q: ReviewQuery) -> list:
+    """The lexical half of hybrid retrieval, over a BOUNDED candidate set.
+
+    This used to hold a BM25 index over the ENTIRE collection in process memory. At
+    308k review chunks that meant gigabytes of resident Python tokens, a rebuild
+    measured in minutes that every concurrent review query queued behind one lock, and
+    an O(n log n) sort of the whole corpus to pick ten rows. Chroma already stores the
+    documents on disk and can filter them by substring, so ask IT for the chunks
+    containing the question's content words, and rank only those.
+
+    Ranking is term COVERAGE (how many of the question's distinct content words a chunk
+    contains, then how often), not BM25. BM25 would be actively wrong here: its IDF is a
+    corpus statistic, and every candidate in this set already contains a query term by
+    construction, so those terms look maximally common and their IDF collapses toward
+    zero - on a small candidate set BM25 literally scores everything 0. Coverage needs no
+    corpus statistics, which is the whole point of not holding the corpus in memory.
+    Fusion only consumes rank order, and the cross-encoder downstream does the precision
+    work regardless.
+    """
+    terms = keyword_terms(q.question)
+    if not terms:
+        return []
+    contains = [{"$contains": term} for term in terms]
+    got = store.get(where=where_filter(q),
+                    where_document=contains[0] if len(contains) == 1 else {"$or": contains},
+                    limit=config.KEYWORD_CANDIDATE_LIMIT,
+                    include=["documents", "metadatas"])
+    scored = []
+    for text, meta, identity in zip(got.get("documents") or [], got.get("metadatas") or [],
+                                    got.get("ids") or []):
+        counts = Counter(tokens(text))
+        present = [counts[term] for term in terms if counts[term]]
+        if not present:
+            continue
+        scored.append(((len(present), sum(present)), row(text, meta, identity)))
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return [candidate for _, candidate in scored][:config.RETRIEVAL_CANDIDATES]
 
 
 def search(q: ReviewQuery) -> dict:
@@ -63,11 +98,12 @@ def search(q: ReviewQuery) -> dict:
     lists = [dense]
     if config.HYBRID_ENABLED and config.KEYWORD_SEARCH == "on":
         try:
-            rows, index = keyword_rows(store)
-            if index:
-                ranked = sorted(zip(rows, index.get_scores(tokens(q.question))), key=lambda p: p[1], reverse=True)
-                lists.append([r for r, score in ranked if score > 0 and matches(r, q)][:config.RETRIEVAL_CANDIDATES])
+            keyword = keyword_candidates(store, q)
+            if keyword:
+                lists.append(keyword)
         except Exception:
+            # Fails open, as before: a store that cannot do document filtering costs
+            # lexical recall, not the answer.
             log.warning("Review keyword search unavailable; using dense search", exc_info=True)
     fused, scores = {}, {}
     for ranked in lists:
@@ -106,7 +142,9 @@ def search(q: ReviewQuery) -> dict:
 
 
 def warm_up() -> None:
-    """Build the local review search dependencies off the request path."""
-    store = get_store()
-    if config.HYBRID_ENABLED and config.KEYWORD_SEARCH == "on":
-        keyword_rows(store)
+    """Load the embedding model off the request path.
+
+    Keyword search no longer builds anything shared, so there is nothing else to warm
+    here - and nothing for a live request to queue behind while this runs.
+    """
+    get_store()

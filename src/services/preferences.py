@@ -1,7 +1,19 @@
 """Account-level durable shopping memory, shared across the owner's conversations."""
 from bson import ObjectId
 from src.agent.schemas import Budget, PreferenceUpdate
+from src.core import config
 from src.services import database
+
+# Typed lists stay short because every value there is a filter the catalog can apply;
+# free-form memories are the recall surface and get their own, larger budget. Both are
+# bounded: an unbounded list is an unbounded document AND an unbounded prompt on every
+# question. When the memory budget is full the OLDEST note is dropped, so a long-running
+# account keeps remembering recent things instead of freezing at its first twenty.
+_TYPED_LIST_LIMIT = 20
+
+
+def _limit_for(field: str) -> int:
+    return config.MEMORY_MAX_ENTRIES if field == "memories" else _TYPED_LIST_LIMIT
 
 
 async def lookup(user_id: str) -> dict:
@@ -20,10 +32,18 @@ async def update(user_id: str, change: PreferenceUpdate) -> dict:
         operation = {"$set": {path: value}}
     elif change.action == "add":
         # Bounded lists avoid unbounded documents and ever-growing prompt memory.
-        existing = await lookup(user_id)
-        if len(existing.get(change.field, [])) >= 20 and value not in existing.get(change.field, []):
-            raise ValueError("A preference list supports at most 20 values")
-        operation = {"$addToSet": {path: value}}
+        existing = (await lookup(user_id)).get(change.field, [])
+        limit = _limit_for(change.field)
+        if value in existing:
+            return await lookup(user_id)  # already remembered; not an error worth raising
+        if change.field == "memories":
+            # Keep the newest `limit` notes. Refusing to learn anything new once full is
+            # worse memory than forgetting the oldest thing.
+            operation = {"$push": {path: {"$each": [value], "$slice": -limit}}}
+        else:
+            if len(existing) >= limit:
+                raise ValueError(f"A preference list supports at most {limit} values")
+            operation = {"$addToSet": {path: value}}
     else:
         operation = {"$pull": {path: value}}
     result = await database._guard(database.users().update_one({"_id": ObjectId(user_id)}, operation))

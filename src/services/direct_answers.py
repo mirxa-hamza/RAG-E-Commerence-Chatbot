@@ -50,9 +50,22 @@ async def _read_simple_preferences(user_id: str, session_id: str, question: str)
         parts.append(f"size {saved['clothing_size']}")
     if saved.get("style_notes"):
         parts.append(f"style {saved['style_notes']}")
-    if not parts:
+    if saved.get("favorite_brands"):
+        brands = saved["favorite_brands"]
+        if isinstance(brands, str):
+            brands = [brands]
+        parts.append("favorite brand" + ("s " if len(brands) != 1 else " ") + ", ".join(brands))
+    memories = saved.get("memories") or []
+    if isinstance(memories, str):
+        memories = [memories]
+    if not parts and not memories:
         return ShoppingResponse(session_id=session_id, answer="I don't have any saved shopping preferences yet.")
-    return ShoppingResponse(session_id=session_id, answer="Your saved shopping preferences are " + "; ".join(parts) + ".")
+    answer = "Your saved shopping preferences are " + "; ".join(parts) + "." if parts else ""
+    if memories:
+        # Newest last, in the order they were remembered.
+        answer += (" " if answer else "") + "I also remember: " + " ".join(
+            note if note.endswith(".") else note + "." for note in memories[-10:])
+    return ShoppingResponse(session_id=session_id, answer=answer.strip())
 
 
 async def _remember_simple_preferences(user_id: str, session_id: str, question: str) -> ShoppingResponse | None:
