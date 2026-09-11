@@ -25,15 +25,45 @@ function applyTheme(theme) {
   }
 }
 
-const labels = {
-  clothing_size: "Clothing size",
-  budget: "Budget",
-  color_preference: "Favorite colors",
-  favorite_brands: "Favorite brands",
-  style_notes: "Personal style",
-};
 const prompts = ["Find black dresses under $40", "Comfortable shoes for long days", "I like simple, understated styles"];
 const el = (id) => document.getElementById(id);
+
+// Shoppers should never read a status code, a stack fragment or the word "provider".
+// Anything we cannot confidently phrase ourselves falls back to a plain apology.
+const FRIENDLY_ERRORS = [
+  [/rate.?limit|too many requests|quota|429/i,
+   "The assistant is handling a lot of requests right now. Please wait a moment and try again."],
+  [/could not reach|connection error|getaddrinfo|failed to fetch|network|dns/i,
+   "I can't reach the assistant right now. Check your internet connection and try again."],
+  [/timed out|timeout|took too long/i,
+   "That took longer than expected. Try asking something a little more specific."],
+  [/already being prepared/i,
+   "I'm still finishing your last answer - give it a moment, then try again."],
+  [/search limit/i,
+   "That question needed too many searches. Try narrowing it to one product or category."],
+  [/expired|not authenticated|invalid token|credentials/i,
+   "Your session has expired. Please sign in again."],
+  [/conversation (was )?(not found|deleted)/i,
+   "That conversation is no longer available."],
+];
+const TECHNICAL = /\b(error|exception|traceback|http|status|backend|provider|api|json|schema|null|undefined|\d{3})\b/i;
+
+function friendlyError(message, status) {
+  const text = String(message || "").trim();
+  for (const [pattern, friendly] of FRIENDLY_ERRORS) {
+    if (pattern.test(text)) return friendly;
+  }
+  if (status === 401 || status === 403) return "Your session has expired. Please sign in again.";
+  if (status === 404) return "That conversation is no longer available.";
+  if (status === 409) return "I'm still finishing your last answer - give it a moment, then try again.";
+  if (status === 422) return "Something about that request wasn't valid. Try rephrasing it.";
+  if (status === 429) return "The assistant is handling a lot of requests right now. Please wait a moment and try again.";
+  if (status >= 500) return "The assistant is having trouble at the moment. Please try again shortly.";
+  // Sign-in messages ("Incorrect username or password") are written for people and
+  // should survive; anything with technical vocabulary in it should not.
+  if (text && text.length <= 160 && !TECHNICAL.test(text)) return text;
+  return "Something went wrong on our side. Please try again.";
+}
 
 function resizeQuestion() {
   const input = el("question");
@@ -53,9 +83,9 @@ async function api(path, method = "GET", data) {
   const result = text ? JSON.parse(text) : {};
   if (!response.ok) {
     const detail = Array.isArray(result.detail)
-      ? result.detail.map((item) => item.msg || item.message || JSON.stringify(item)).join(" ")
+      ? result.detail.map((item) => item.msg || item.message || "").join(" ")
       : result.detail;
-    throw new Error(typeof detail === "string" ? detail : "Please check your input and try again.");
+    throw new Error(friendlyError(detail, response.status));
   }
   return result;
 }
@@ -63,7 +93,7 @@ async function api(path, method = "GET", data) {
 async function readEvents(response, onEvent) {
   if (!response.ok || !response.body) {
     const data = await response.json().catch(() => ({}));
-    throw new Error(typeof data.detail === "string" ? data.detail : "The request failed.");
+    throw new Error(friendlyError(data.detail, response.status));
   }
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
@@ -81,13 +111,13 @@ async function readEvents(response, onEvent) {
         const data = lines.filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trimStart()).join("\n");
         if (!event || !data) continue;
         const parsed = JSON.parse(data);
-        if (event === "error") throw new Error(parsed.message);
+        if (event === "error") throw new Error(friendlyError(parsed.message));
         if (event === "done") complete = true;
         onEvent(event, parsed);
       }
       if (done) break;
     }
-    if (!complete) throw new Error("Connection ended before the answer was complete. Please retry.");
+    if (!complete) throw new Error("The answer was cut off before it finished. Please try again.");
   } finally {
     await reader.cancel().catch(() => {});
     reader.releaseLock();
@@ -125,7 +155,6 @@ function setBusy(value) {
 function showApp() {
   el("auth-shell").hidden = !!state.user;
   el("app-shell").hidden = !state.user;
-  if (!state.user) document.body.classList.remove("prefs-open");
   document.body.classList.toggle("auth-view", !state.user);
   el("boot-loading")?.setAttribute("hidden", "");
   updateChatLayoutState();
@@ -177,37 +206,10 @@ function renderSessions() {
   el("load-more").hidden = !state.cursor;
 }
 
-function renderPrefs() {
-  const select = el("preference-field");
-  if (!select.children.length) {
-    Object.entries(labels).forEach(([key, label]) => select.add(new Option(label, key)));
-  }
-  const list = el("prefs-list");
-  list.replaceChildren();
-  Object.entries(state.prefs).forEach(([key, value]) => {
-    const row = document.createElement("div");
-    const term = document.createElement("dt");
-    term.textContent = labels[key] || key;
-    const definition = document.createElement("dd");
-    definition.textContent = typeof value === "string" ? value : Array.isArray(value) ? value.join(", ") : JSON.stringify(value);
-    const clear = document.createElement("button");
-    clear.type = "button";
-    clear.textContent = "Clear";
-    clear.setAttribute("aria-label", `Clear ${labels[key] || key}`);
-    clear.addEventListener("click", async () => {
-      try {
-        state.prefs = await api("/api/preferences", "PATCH", {field: key, action: "clear"});
-        renderPrefs();
-      } catch (error) { setError("app-error", error.message); }
-    });
-    row.append(term, definition, clear);
-    list.append(row);
-  });
-}
-
 function messageNode(message, index) {
   const article = document.createElement("article");
   article.className = `message ${message.role}`;
+  article.dataset.index = String(index);
   const label = document.createElement("div");
   label.className = "message-label";
   label.textContent = message.role === "user" ? "You" : "FitFinder AI";
@@ -346,19 +348,44 @@ function productCard(product) {
   return card;
 }
 
+function scrollToBottom(force = false) {
+  const conversation = el("conversation");
+  if (!conversation) return;
+  const distance = conversation.scrollHeight - conversation.scrollTop - conversation.clientHeight;
+  // Don't yank the view back down while someone is scrolled up reading an earlier answer.
+  if (!force && distance > 140) return;
+  conversation.scrollTop = conversation.scrollHeight;
+}
+
 function renderMessages() {
   const conversation = el("conversation");
   conversation.querySelectorAll(".message").forEach((node) => node.remove());
   el("welcome").hidden = state.messages.length > 0;
   updateChatLayoutState();
   state.messages.forEach((message, index) => conversation.append(messageNode(message, index)));
-  conversation.scrollTop = conversation.scrollHeight;
+  scrollToBottom(true);
+}
+
+// Replace ONE rendered turn in place.
+//
+// The whole conversation used to be torn down and rebuilt on every streaming event,
+// which re-created every product image (so they visibly reloaded), reset the scroll
+// position, and made the screen flicker for a second or two on each question. Only the
+// turn that actually changed should be touched.
+function updateMessage(index) {
+  const conversation = el("conversation");
+  const message = state.messages[index];
+  if (!message) return;
+  const existing = conversation.querySelector(`.message[data-index="${index}"]`);
+  const replacement = messageNode(message, index);
+  if (existing) existing.replaceWith(replacement);
+  else conversation.append(replacement);
+  scrollToBottom();
 }
 
 function renderLiveReply(reply) {
-  const conversation = el("conversation");
-  const assistantNodes = conversation.querySelectorAll(".message.assistant");
-  const article = assistantNodes[assistantNodes.length - 1];
+  const index = state.messages.indexOf(reply);
+  const article = el("conversation").querySelector(`.message[data-index="${index}"]`);
   if (!article) {
     renderMessages();
     return;
@@ -368,19 +395,14 @@ function renderLiveReply(reply) {
   renderMessageText(text, reply.content || (state.status === "generating"
     ? "Writing the answer from retrieved evidence..."
     : "Retrieving catalog and review evidence..."), true);
-  conversation.scrollTop = conversation.scrollHeight;
+  scrollToBottom();
 }
 
 async function refresh() {
-  const [data, prefs] = await Promise.all([
-    api("/api/sessions"),
-    api("/api/preferences"),
-  ]);
+  const data = await api("/api/sessions");
   state.sessions = data.sessions;
   state.cursor = data.next_cursor;
-  state.prefs = prefs;
   renderSessions();
-  renderPrefs();
 }
 
 async function authenticate(event) {
@@ -424,7 +446,12 @@ async function send(event, text = el("question").value) {
       signal: controller.signal,
     });
     await readEvents(response, (eventName, data) => {
-      if (eventName === "session") state.active = data.session_id;
+      // Only the live assistant turn is re-rendered; rebuilding the whole thread on
+      // every event is what used to make the screen flicker and the scroll jump.
+      if (eventName === "session") {
+        state.active = data.session_id;
+        return;
+      }
       if (eventName === "status") {
         state.status = data.state === "generating" ? "generating" : "retrieving";
         renderLiveReply(reply);
@@ -441,15 +468,17 @@ async function send(event, text = el("question").value) {
         if (typeof data.answer === "string") reply.content = data.answer;
         reply.suggested_relaxations = data.suggested_relaxations || [];
       }
-      renderMessages();
+      updateMessage(state.messages.indexOf(reply));
     });
     await refresh();
   } catch (error) {
     reply.content = "";
     reply.products = [];
     reply.citations = [];
-    renderMessages();
-    setError("app-error", error.name === "AbortError" ? "Response stopped. You can retry your question." : error.message);
+    updateMessage(state.messages.indexOf(reply));
+    setError("app-error", error.name === "AbortError"
+      ? "Response stopped. You can retry your question."
+      : friendlyError(error.message));
     el("question").value = text;
   } finally {
     state.status = "";
@@ -497,25 +526,14 @@ function bindEvents() {
     renderSessions();
     renderMessages();
   });
-  el("toggle-prefs").addEventListener("click", () => {
-    const panel = el("preferences");
-    panel.hidden = !panel.hidden;
-    document.body.classList.toggle("prefs-open", !panel.hidden);
-    el("toggle-prefs").setAttribute("aria-expanded", String(!panel.hidden));
-  });
   el("theme-toggle").addEventListener("click", () => {
     const next = document.body.classList.contains("light-theme") ? "dark" : "light";
     localStorage.setItem("fitfinder_theme", next);
     applyTheme(next);
   });
-  el("close-prefs").addEventListener("click", () => {
-    el("preferences").hidden = true;
-    document.body.classList.remove("prefs-open");
-    el("toggle-prefs").setAttribute("aria-expanded", "false");
-  });
   el("sign-out").addEventListener("click", () => {
     localStorage.removeItem("thread_token");
-    Object.assign(state, {token: "", user: null, active: null, messages: [], prefs: {}, sessions: []});
+    Object.assign(state, {token: "", user: null, active: null, messages: [], sessions: []});
     showApp();
     renderAuth();
   });
@@ -537,22 +555,6 @@ function bindEvents() {
       renderSessions();
     } catch (error) { setError("app-error", error.message); }
   });
-  el("preference-field").addEventListener("change", () => {
-    el("preference-value-label").firstChild.nodeValue = el("preference-field").value === "budget" ? "Maximum budget ($)" : "Value";
-  });
-  el("preference-form").addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const form = event.currentTarget;
-    const data = new FormData(form);
-    const field = data.get("field");
-    let value = data.get("value");
-    if (field === "budget") value = {max: Number(value)};
-    try {
-      state.prefs = await api("/api/preferences", "PATCH", {field, action: ["favorite_brands", "color_preference"].includes(field) ? "add" : "set", value});
-      form.reset();
-      renderPrefs();
-    } catch (error) { setError("app-error", error.message); }
-  });
   prompts.forEach((text, index) => {
     const button = document.createElement("button");
     button.type = "button";
@@ -567,7 +569,6 @@ async function boot() {
   bindEvents();
   applyTheme(localStorage.getItem("fitfinder_theme") || "dark");
   renderAuth();
-  renderPrefs();
   if (!state.token) {
     showApp();
     return;

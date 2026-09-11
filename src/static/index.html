@@ -5,10 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>FitFinder AI - Personal Shopping Assistant</title>
   <link rel="icon" type="image/svg+xml" href="/logo.svg">
-  <link rel="stylesheet" href="/styles.css?v=20260908-3">
-  <link rel="stylesheet" href="/polish.css?v=20260910-1">
-  <link rel="stylesheet" href="/chatgpt-reference.css?v=20260908-17">
-  <script defer src="/app.js?v=20260910-1"></script>
+  <link rel="stylesheet" href="/styles.css?v=20260911-1">
+  <link rel="stylesheet" href="/polish.css?v=20260911-1">
+  <link rel="stylesheet" href="/chatgpt-reference.css?v=20260911-3">
+  <script defer src="/app.js?v=20260911-2"></script>
 </head>
 <body>
   <div id="boot-loading" class="boot-loading" role="status" aria-live="polite">
@@ -48,11 +48,10 @@
       <nav id="sessions" aria-label="Saved conversations"></nav>
       <button id="load-more" class="text-button" type="button" hidden>Load older conversations</button>
       <div class="sidebar-bottom">
-        <button id="toggle-prefs" type="button" aria-expanded="false">Your preferences</button>
         <div class="account">
           <span id="avatar" class="avatar"></span>
           <span id="account-name"></span>
-          <button id="sign-out" class="text-button" type="button">Sign out</button>
+          <button id="sign-out" class="sign-out-button" type="button">Sign out</button>
         </div>
       </div>
     </aside>
@@ -65,20 +64,6 @@
           <span id="catalog-tag" class="catalog-tag">Amazon Fashion</span>
         </div>
       </header>
-
-      <section id="preferences" class="preferences" hidden>
-        <div class="section-heading">
-          <h2>Your preferences</h2>
-          <button id="close-prefs" type="button" aria-label="Close preferences">x</button>
-        </div>
-        <p class="muted">Remembered across your conversations. You can also update these by chatting.</p>
-        <dl id="prefs-list"></dl>
-        <form id="preference-form" class="preference-form">
-          <label>Preference<select id="preference-field" name="field"></select></label>
-          <label id="preference-value-label">Value<input name="value" required maxlength="500"></label>
-          <button class="primary" type="submit">Save</button>
-        </form>
-      </section>
 
       <section id="conversation" class="conversation" aria-label="Conversation">
         <div id="welcome" class="welcome">

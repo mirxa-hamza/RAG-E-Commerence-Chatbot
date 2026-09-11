@@ -14,6 +14,9 @@
   --cg-send-text: #111;
   --cg-radius: 22px;
   --cg-sidebar-width: 326px;
+  /* The reading column: message text, product grid and composer all follow it.
+     Raise for less empty space at the sides, lower for shorter, easier lines. */
+  --cg-content-width: 980px;
 }
 
 html,
@@ -277,7 +280,7 @@ body.light-theme .composer-wrap { background: linear-gradient(to top, #f7f7f4 78
 body.light-theme .composer::before { color: #718077; }
 body.light-theme .composer .primary { background: #23533f; color: #fff; }
 body.light-theme .catalog-tag { color: #34423a; }
-body.light-theme .composer-wrap { width: min(1100px, calc(100% - 48px)); }
+body.light-theme .composer-wrap { width: min(var(--cg-content-width), calc(100% - 48px)); }
 body.light-theme .welcome h1 { color: #1c2420; }
 body.light-theme .new-chat,
 body.light-theme .composer .primary { background: linear-gradient(110deg, #1f5a43, #a67b3e); color: #fff !important; }
@@ -339,7 +342,7 @@ body.light-theme details blockquote {
 /* Keep the composer geometry identical in both themes; only colors should change. */
 body .composer-wrap,
 body.light-theme .composer-wrap {
-  width: min(820px, calc(100% - 48px));
+  width: min(var(--cg-content-width), calc(100% - 48px));
 }
 
 /* Final theme contract for every interactive control. No dark fallback may leak into
@@ -394,11 +397,11 @@ body.light-theme #stop:hover:not(:disabled) {
 /* Keep the composer geometry identical in both themes; only colors should change. */
 body .composer-wrap,
 body.light-theme .composer-wrap {
-  width: min(820px, calc(100% - 48px));
+  width: min(var(--cg-content-width), calc(100% - 48px));
 }
 
 /* Keep the conversation column readable while matching the ChatGPT-style flow. */
-.conversation { width: min(100%, 1180px); margin-inline: auto; }
+.conversation { width: 100%; margin-inline: auto; }
 .message { width: 100%; }
 .message.assistant { text-align: left; }
 .message.user { margin-left: auto; margin-right: 0; }
@@ -411,7 +414,7 @@ body.light-theme .composer-wrap {
 }
 
 .conversation {
-  padding: 40px max(24px, calc((100% - 820px) / 2)) 160px;
+  padding: 40px max(24px, calc((100% - var(--cg-content-width)) / 2)) 160px;
   color: var(--cg-text);
 }
 
@@ -916,4 +919,88 @@ blockquote {
   .sidebar-bottom {
     flex-wrap: wrap;
   }
+}
+
+/* ===================================================================
+   Account menu, hover states and layout corrections (2026-09-11)
+   Appended last so these win over the earlier, conflicting rules.
+   =================================================================== */
+
+/* Hover used to set a dark background from the dark palette while a
+   more specific light-theme rule kept the text dark, so "Sign out" and
+   "Load older conversations" turned into unreadable black pills. Each
+   theme now sets BOTH halves of the pair. */
+body:not(.light-theme) .text-button:hover:not(:disabled),
+body:not(.light-theme) .sidebar-bottom button:hover:not(:disabled),
+body:not(.light-theme) #load-more:hover:not(:disabled) {
+  background: var(--cg-sidebar-soft);
+  color: var(--cg-text);
+}
+
+body.light-theme .text-button:hover:not(:disabled),
+body.light-theme .sidebar-bottom button:hover:not(:disabled),
+body.light-theme #load-more:hover:not(:disabled),
+body.light-theme .account:hover,
+body.light-theme .account .text-button:hover:not(:disabled) {
+  background: #dfe5dc;
+  color: #1c2420;
+}
+
+/* Account row: avatar and name on the left, a Sign out pill on the right. */
+.sidebar-bottom {
+  position: relative;
+}
+
+.account {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 6px 8px 8px;
+  font-size: 13px;
+}
+
+.account > #account-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sign-out-button {
+  flex: none;
+  min-height: 32px;
+  padding: 6px 14px;
+  border: 1px solid var(--cg-border);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .06);
+  color: var(--cg-text);
+  font-size: 12.5px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+/* Both halves of the pair are set per theme. Setting only the background is
+   what previously left dark text on a dark hover, i.e. an unreadable pill. */
+.sign-out-button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, .14);
+  color: var(--cg-text);
+}
+
+body.light-theme .sign-out-button {
+  border-color: #cbd4cc;
+  background: #fff;
+  color: #1c2420;
+}
+
+body.light-theme .sign-out-button:hover:not(:disabled) {
+  background: #e6ebe4;
+  color: #1c2420;
+}
+
+/* Smooth scrolling plus a scroll-to-bottom on every streamed token reads
+   as a jitter, so stream instantly and animate only when idle. */
+body.body-busy .conversation {
+  scroll-behavior: auto;
 }
