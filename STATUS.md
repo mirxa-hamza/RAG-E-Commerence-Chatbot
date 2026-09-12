@@ -1,5 +1,10 @@
 # STATUS — where this project is right now
 
+> Superseded snapshot: this document below describes the old PDF cleanup. For the current
+> LangChain shopping implementation, read README.md and PLAN.md's implementation checkpoint.
+> As of 2026-09-07 the new backend, Next.js frontend and Docker configuration are written;
+> tests pass, but current ingestion and full-corpus/container verification are still pending.
+
 Written 2026-09-07, immediately after the local-only refactor. Read this first if you are
 picking the project up cold (human or AI). `README.md` is how to run it, `CLAUDE.md` is the
 rules for changing it, this file is **what state it is in today**.

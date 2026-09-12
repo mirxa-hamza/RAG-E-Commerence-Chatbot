@@ -1,163 +1,120 @@
-# CLAUDE.md — working notes for this codebase
+# CLAUDE.md — FitFinder AI engineering guide
 
-Guidance for anyone (human or agent) changing this project. `README.md` explains what it
-does and how to run it; this file explains the rules that keep it correct.
+Updated 2026-09-10. This document describes the active ecommerce shopping assistant. Do not
+apply the older PDF-RAG/Next.js notes that used to live here.
 
-## What this is
+## Product and architecture
 
-A from-scratch RAG system over PDFs. **Everything except answer generation runs on this
-machine**: extraction, semantic chunking, embedding, the vector store, keyword search and
-re-ranking. Only the retrieved passages are sent out, to Groq or the Gemini API, to be
-written into prose.
+FitFinder AI is a FastAPI application with a static browser UI. The backend exposes the chat,
+auth, session, preference, system, and ingestion APIs; the UI is served from `src/static/`.
+There is no active `frontend/` or Next.js application.
 
-There is deliberately no LangChain or LlamaIndex. Every stage is plain Python you can read
-top to bottom. That is the point of the project; a change that hides a stage behind a
-framework is a change against its purpose.
+The main request path is:
 
-## Architecture in one pass
-
-```
-data/*.pdf
-  → pdf.extract_pages()        PyMuPDF, paragraph breaks preserved
-  → pdf.sentences_with_pages() sentences, each remembering its page
-  → chunking.chunk_pages()     SEMANTIC: embed every sentence + neighbours, cut at the
-                               95th-percentile distance spike, then enforce size bounds
-  → embeddings.split_to_token_limit()   split anything past the model's token window
-  → vectorstore.add_chunks()   embed + store in ChromaDB, batched
-
-question
-  → llm.rewrite_question()     only when there is history
-  → vectorstore.query_chunks() dense                 ┐
-  → bm25.search()              lexical               ┴→ retrieval.fuse()  (RRF)
-  → reranker.rerank()          cross-encoder
-  → relevance floor            nothing above it = "not in these documents", NO LLM CALL
-  → retrieval._expand_neighbors()  chunk_index ± NEIGHBOR_EXPANSION
-  → llm.build_context()        under MAX_CONTEXT_CHARS
-  → llm.generate_answer() / stream_answer()
+```text
+src/static/app.js
+  -> POST /chat/stream
+  -> src/api/shopping.py
+  -> direct_answers.py for deterministic shortcuts, otherwise src/agent/shopper.py
+  -> LangChain tools (Mongo catalog, Chroma reviews, Mongo memory)
+  -> grounded AnswerDraft
+  -> hydrate/validate product cards and evidence
+  -> SSE response and persistence in the session
 ```
 
-`src/api/` handlers stay thin: validate, call a service, shape the response. The pipeline
-lives in `src/services/` and `src/ml/`.
+Keep API modules thin. Business logic belongs in `src/services/`; agent behavior belongs in
+`src/agent/`; configuration belongs in `src/core/config.py`.
 
-## The rules that matter
+## Data stores and identifiers
 
-### 1. Isolation — three places, all of them
+- MongoDB (`ecommerce_agent` by default) stores users, sessions/messages, durable shopping
+  preferences, audit records, and the canonical product catalog (`products`). Product cards
+  must be hydrated from Mongo by `parent_asin`; never trust a model-generated title or price.
+- ChromaDB (`storage/chroma_db`, collection `amazon_fashion_reviews_384`) stores embedded review
+  chunks for semantic retrieval. It is evidence, not the source of product truth.
+- Raw ingestion inputs default to `data/meta_Amazon_Fashion.jsonl` and
+  `data/Amazon_Fashion.jsonl`. Review IDs are generated as `<parent_asin>::r<index>` and chunk
+  IDs as `<review_id>::c<chunk_index>`. Metadata includes `parent_asin`, `review_id`, rating,
+  title, timestamp, and chunk index.
+- Use `scripts/ingest_ecommerce.py` to build/update the stores and
+  `scripts/verify_ecommerce.py` to verify counts and identifiers. Never edit Chroma files by
+  hand.
 
-Documents belong to the account that uploaded them. Three functions reach stored text and
-**must** filter by owner:
+## Agentic RAG and privacy rules
 
-- `vectorstore.query_chunks(..., user_id=)`
-- `vectorstore.get_neighbors_bulk(..., user_id=)` — fetched by index, so it bypasses every
-  ranking filter; without the owner clause a hit on your own document pulls in the adjacent
-  chunk of someone else's file with the same name
-- `vectorstore.all_chunks(user_id=)` — feeds BM25, which ranks in memory and cannot use
-  Chroma's where-clause
+`src/agent/shopper.py` creates the LangChain agent, collects evidence, and produces the
+structured `AnswerDraft` used by the UI. The active tools are:
 
-`user_id=None` means "no filter" and is only ever correct for offline callers (the CLI, the
-eval harness). `retrieval.retrieve()` re-asserts ownership on the way out and logs an error
-if anything slipped through — that is a net, not the fix.
+- `catalog_search`: exact/filtered product retrieval from MongoDB.
+- `semantic_review_search`: hybrid Chroma review retrieval (dense + keyword/RRF, with optional
+  cross-encoder reranking).
+- `memory_lookup` and `remember_preference`: durable preference reads/writes in MongoDB.
 
-**Adding a fourth way to reach stored text is the thing to avoid.** Three is already the
-number to remember. If you need one, thread `user_id` through it and add it to this list.
+Tool calls must use the authenticated user and session IDs closed over by the server. Never let
+the model select or override those IDs. `hydrate()` must reject unknown product IDs, discard
+stale evidence, and ensure every displayed price/title comes from the current tool results.
+Answers must be natural prose (no Python list repr such as `['black']`, no raw internal fields,
+and no invented products). If exact filters return no products, perform a clearly labelled,
+relaxed alternative search when the user asks for alternatives; otherwise explain which
+constraint failed.
 
-### 2. Ingestion is the only entrance
+Memory is user-scoped and durable in MongoDB. LangGraph checkpointing/store settings are useful
+for the running process, but must not be treated as a replacement for Mongo persistence.
 
-Nothing is indexed from a request body. `POST /upload` writes a validated file into
-`data/users/<user_id>/` and the ordinary ingestion job picks it up, so uploaded and
-hand-copied PDFs travel identical code paths.
+## Providers and configuration
 
-`services/uploads.py` is the boundary between "bytes someone sent over HTTP" and "a file the
-pipeline will read". It distrusts the filename (path traversal), the extension and content
-type (checks the PDF magic bytes), and the length (enforced while streaming, not after).
-Keep it that way.
+The provider is selected in `.env` through the project settings (Groq or Google Gemini). Model,
+timeouts, retry limits, retrieval counts, reranking, and warmup are all configurable in
+`src/core/config.py`. Restart Uvicorn after changing `.env`. Never commit, print, or paste API
+keys; rotate any credential that has appeared in logs or chat history.
 
-### 3. Ownership comes from the path, not the manifest
+Hosted models use a tool-enabled phase followed by schema-only finalization where required. Do
+not combine JSON mode/`response_format` with tool calling on providers that reject that request.
+Keep retries bounded and preserve the fallback/direct-answer path for simple local queries.
 
-`users/<id>/book.pdf` → `<id>`. Derived, never trusted from stored metadata, so a
-hand-edited manifest cannot hand one user another user's document. Files copied into `data/`
-by hand belong to the **owner of record** — the first account created — because an ownerless
-document is invisible to every filter and would occupy the store forever.
+## Performance and operations
 
-### 4. Single worker, on purpose
+The BGE embedding model and optional cross-encoder are CPU-heavy and load lazily. Startup warmup
+runs in a background thread (`APP_WARMUP_ENABLED`, with a default delay of 20 seconds) so login
+is not blocked; the first retrieval after a cold start can still be slower. Run one Uvicorn
+worker when using embedded Chroma. Keep `RETRIEVAL_CANDIDATES`, `REVIEW_MAX_RESULTS_TO_MODEL`,
+`AGENT_MAX_TOOL_ROUNDTRIPS`, and `AGENT_MODEL_RETRIES` small enough for the configured provider.
+Use `/info` to inspect model, store, count, reranker, and cache status.
 
-The BM25 cache, the answer cache, the rate limiter and the ingestion job are all in-process,
-and Chroma's persistent client is single-process. Run `--workers 1`. Running more does not
-error; it silently multiplies every rate limit by the worker count and gives each worker its
-own stale caches.
+When changing embedding models, dimensions, chunking, or review metadata, ingest into a new
+collection (or explicitly force a rebuild) and verify it before switching production settings.
+Do not open the same embedded Chroma directory for concurrent write/indexing processes.
 
-### 5. Lazy loading is not optional
+## Frontend conventions
 
-uvicorn imports the app **before** it binds the socket. Anything done at import time happens
-while the port is closed, and the browser shows ERR_CONNECTION_REFUSED rather than a loading
-screen. Importing torch and loading the embedding model at import cost ~18s of that.
+The browser UI lives in `src/static/` (`index.html`, `app.js`, and CSS files). Theme styles must
+define both light and dark values for backgrounds, text, buttons, product/image panels, review
+evidence, hover/focus states, and the composer. Keep the composer height and positioning
+independent of theme. After static changes, update the query-string cache version in
+`src/static/index.html` when browser caching would otherwise hide the fix.
 
-So: the embedding model, the cross-encoder, the Chroma client and the Groq client are all
-lazy singletons, warmed on a background thread from `main.py`'s lifespan. Do not move any of
-them to module scope.
+## Testing and useful commands
 
-### 6. Stages fail OPEN, and say so
+Use the application virtual environment:
 
-Re-ranking, neighbour expansion and the keyword index all degrade rather than fail the
-question: worse ranking beats no answer. But a silent degradation is a bug report six weeks
-later, so `/info` reports `reranker_available` and each fallback logs a warning.
-
-### 7. Changing chunking means re-ingesting
-
-Different chunking settings produce different chunk text and therefore different vectors.
-Mixing two generations in one collection does not error — it quietly ruins every number
-measured afterwards. Change a setting, then:
-
-```bash
-python scripts/ingest.py --force
+```powershell
+.\.venv-app\Scripts\python.exe -m pytest tests -q
+python -m uvicorn src.main:app --port 8000 --workers 1
+python scripts/verify_ecommerce.py
+python evaluation/run.py
 ```
 
-and point `CHROMA_COLLECTION` somewhere new if you want to keep the old index around to
-compare against.
+Tests should use isolated fixtures/fake providers and must not require live Groq/Gemini,
+MongoDB, or a pre-existing Chroma index unless explicitly marked as an integration test. Add
+regression coverage for provider failures, malformed tool arguments, no-match searches, memory
+privacy, product price/title grounding, and light/dark rendering behavior.
 
-### 8. Length is enforced by the prompt, never by the token ceiling
+## Change checklist
 
-`LLM_MAX_TOKENS` does not shorten an answer, it **cuts** it — the model writes the same page
-and the transport stops mid-word. A truncated answer is strictly worse than a long one,
-because the reader cannot tell which facts were dropped. The word budget is stated in
-`SYSTEM_PROMPT` and again in `ANSWER_REMINDER`, which the model reads last; the ceiling stays
-generous. `tests/test_answer_length_offline.py` pins this down.
+Before handing off a change:
 
-### 9. Retrieved passages are data, not instructions
-
-Anyone who can upload a PDF can write "ignore previous instructions" into it. Chunks are
-fenced in `<document>` blocks and the system prompt says to treat their contents as quoted
-material. That is a mitigation, not a guarantee — which is why the answer is still built
-only from retrieved chunks.
-
-## Configuration
-
-Every setting lives in `src/core/config.py` and nothing else calls `os.getenv()`. Values are
-read at **import** time, so a `.env` change needs a restart. `config.py` cannot log
-(`core.logging` imports from it), so it collects `CONFIG_WARNINGS` and `main.py` emits them
-at startup — including the "this key is set twice in .env" check, which exists because the
-symptom is always "I changed the setting and nothing happened".
-
-## Testing and measurement
-
-Two different questions, kept apart on purpose:
-
-- `tests/*.py` — **correctness**. Offline, no model download, no network, no key. The
-  embedding model is stubbed with a deterministic fake whose vectors encode a known topic
-  structure, so "did it cut in the right place" is checkable rather than a vibe. Every check
-  was confirmed to fail when the behaviour it guards was deliberately broken.
-- `eval/run_eval.py` — **quality**. hit-rate@k, MRR, refusal rate, optional LLM-as-judge, and
-  `--no-rerank` / `--no-hybrid` / `--no-expand` to measure what each stage is actually worth.
-
-A test that cannot fail is decoration. A measurement run against the fixture PDF describes a
-fictional document — replace `eval/golden_questions.json` with questions about your real
-corpus before believing any of its numbers.
-
-## Style
-
-- Comments explain **why**, not what. A comment restating the line below it is noise; a
-  comment recording the bug that motivated the line is the reason the file is readable.
-- Keep the honest caveats. Where a docstring says a technique may not beat the simpler
-  alternative on this corpus, that is information, not a to-do.
-- Prefer one obvious code path over a configurable one. Every branch is a state someone has
-  to reason about, and the ones removed from this project were removed because nobody could
-  hold all of them in their head at once.
+1. Run `git diff --check` and the focused tests, then the full test suite when practical.
+2. Confirm new product claims are backed by Mongo results and review claims by Chroma evidence.
+3. Check that loading, timeout, and provider errors remain user-readable and do not leak keys or
+   internal IDs.
+4. Keep generated indexes, local databases, `.env`, and downloaded model caches out of commits.

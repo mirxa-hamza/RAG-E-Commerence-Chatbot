@@ -5,13 +5,15 @@ calling os.getenv() directly, so there's exactly one source of truth.
 Paths are resolved against the project root (not the current working directory), so the
 server and the CLI scripts behave identically no matter where you launch them from.
 
-This build is LOCAL-ONLY by design:
+This build is LOCAL-ONLY by design (see PLAN.md for the full architecture):
 
   * chunking   - semantic (embedding-breakpoint) chunking, on this machine
   * embeddings - sentence-transformers, on this machine
   * re-ranking - a cross-encoder, on this machine
-  * vectors    - ChromaDB in a folder on this machine
-  * documents  - PDFs in data/ on this machine
+  * vectors    - ChromaDB, embedded on this machine by default (CHROMA_MODE=embedded);
+                 a server-mode client is available for the containerized deployment
+  * catalog    - a curated subset of the Amazon Fashion 2023 dataset, ingested from the
+                 JSONL dumps in data/ into MongoDB (products) and ChromaDB (reviews)
   * accounts   - MongoDB on this machine
 
 The only thing that leaves the machine is the answer-generation call (Groq or the Gemini
@@ -22,11 +24,20 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+# This project uses sentence-transformers through PyTorch. If TensorFlow/Keras is also
+# installed in the environment, Transformers may try to import it while loading embedding
+# helpers and fail on Keras 3 unless `tf-keras` is installed. Disable the TensorFlow path
+# early, before any module imports sentence-transformers/transformers.
+os.environ.setdefault("USE_TF", "0")
+os.environ.setdefault("TRANSFORMERS_NO_TF", "1")
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+
 # src/core/config.py -> src/ -> project root
 SRC_DIR = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = SRC_DIR.parent
-
-# The web UI FastAPI serves at "/" (see src/main.py).
 STATIC_DIR = SRC_DIR / "static"
 
 load_dotenv(PROJECT_ROOT / ".env")
@@ -137,7 +148,7 @@ LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.2"))
 # was enough for the thinking and nothing else - the request returned HTTP 200 with
 # content=None, which reached the user as an empty answer bubble under a populated sources
 # list. 2000 leaves room for both. A non-reasoning model never uses the headroom.
-LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "2000"))
+LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "900"))
 # How hard a reasoning model thinks: "low" | "medium" | "high", or "" to send nothing.
 # Only gpt-oss models accept the field, so ml/llm.py sends it only to those - a llama model
 # rejects it outright. "low" is the default because this is document question-answering:
@@ -170,7 +181,7 @@ ANSWER_STYLES = {
     "standard": 300,   # room for a genuine multi-part answer
     "detailed": 700,   # ask for it explicitly
 }
-ANSWER_STYLE = os.getenv("ANSWER_STYLE", "concise").strip().lower()
+ANSWER_STYLE = os.getenv("ANSWER_STYLE", "brief").strip().lower()
 if ANSWER_STYLE not in ANSWER_STYLES:
     raise ValueError(f"ANSWER_STYLE must be one of {sorted(ANSWER_STYLES)}, "
                      f"got {ANSWER_STYLE!r}")
@@ -204,28 +215,76 @@ EMBEDDING_BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", "64"))
 DATA_DIR = _path_setting("DATA_DIR", PROJECT_ROOT / "data")
 # Generated index state lives under storage/, kept out of the source tree and gitignored.
 CHROMA_DIR = _path_setting("CHROMA_DIR", PROJECT_ROOT / "storage" / "chroma_db")
-CHROMA_COLLECTION = os.getenv("CHROMA_COLLECTION", "rag_documents")
+# Renamed from the PDF-RAG default (rag_documents) - this collection holds review chunks
+# embedded with the local 384-dim bge-small model, not PDF passages. Point it somewhere
+# new if you ever want to keep an old generation of vectors around to compare against.
+CHROMA_COLLECTION = os.getenv("CHROMA_COLLECTION", "amazon_fashion_reviews_384")
 # Chroma enforces a max batch size per add() call; stay well under it.
 CHROMA_ADD_BATCH = int(os.getenv("CHROMA_ADD_BATCH", "1000"))
-# Small JSON sidecar tracking what's been ingested, so /stats and the re-ingest check
-# don't have to read every chunk's metadata out of Chroma.
-MANIFEST_PATH = CHROMA_DIR / "manifest.json"
 
-# Uploads (POST /upload). Enforced while streaming, so an over-sized file is cut off and
-# deleted rather than being written to disk first and measured afterwards.
-MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_MB", "100")) * 1024 * 1024
-
-# Total bytes one account may store. Without it, a single user can fill the disk 100MB at
-# a time - and a full disk stops MongoDB and every other user, not just the culprit.
-MAX_USER_STORAGE_BYTES = int(os.getenv("MAX_USER_STORAGE_MB", "2048")) * 1024 * 1024
+# Embedded (PersistentClient, this process, default) vs server (HttpClient, talking to a
+# chromadb container) - see PLAN.md Phase 6. HOST/PORT are only read in server mode.
+CHROMA_MODE = os.getenv("CHROMA_MODE", "embedded").strip().lower()
+if CHROMA_MODE not in ("embedded", "server"):
+    raise ValueError(f"CHROMA_MODE must be 'embedded' or 'server', got {CHROMA_MODE!r}")
+CHROMA_HOST = os.getenv("CHROMA_HOST", "localhost")
+CHROMA_PORT = int(os.getenv("CHROMA_PORT", "8000"))
 
 # ---------------------------------------------------------------- Auth (MongoDB + JWT)
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
-MONGO_DB = os.getenv("MONGO_DB", "rag_app")
+MONGO_DB = os.getenv("MONGO_DB", "ecommerce_agent")
 USERS_COLLECTION = os.getenv("USERS_COLLECTION", "users")
-# Append-only record of logins, uploads and deletions. The first thing anyone asks for
-# after an incident, and impossible to reconstruct after the fact.
+# Append-only record of logins and account changes. The first thing anyone asks for after
+# an incident, and impossible to reconstruct after the fact.
 AUDIT_COLLECTION = os.getenv("AUDIT_COLLECTION", "audit")
+
+# ---------------------------------------------------------------- E-commerce ingestion
+# The two Amazon Fashion 2023 JSONL dumps (product metadata and reviews) and how much of
+# them actually gets ingested. See PLAN.md Phase 2 for the 3-pass streaming pipeline and
+# preprocessing rules these feed.
+AMAZON_META_PATH = _path_setting("AMAZON_META_PATH", DATA_DIR / "meta_Amazon_Fashion.jsonl")
+AMAZON_REVIEWS_PATH = _path_setting("AMAZON_REVIEWS_PATH", DATA_DIR / "Amazon_Fashion.jsonl")
+# How many products (ranked by review count) to ingest. The full dataset is millions of
+# products; a curated subset is what makes local, CPU-only embedding practical.
+PRODUCT_SUBSET_SIZE = int(os.getenv("PRODUCT_SUBSET_SIZE", "5000"))
+if PRODUCT_SUBSET_SIZE < 1:
+    raise ValueError(f"PRODUCT_SUBSET_SIZE must be at least 1, got {PRODUCT_SUBSET_SIZE}")
+MONGO_PRODUCTS_COLLECTION = os.getenv("MONGO_PRODUCTS_COLLECTION", "products")
+# Reviews not detected as English are dropped before embedding: the local embedding model
+# (bge-small-en-v1.5) is English-tuned, and a foreign-language review embeds to noise
+# rather than anything genuinely retrievable.
+REVIEW_LANGUAGE_FILTER_ENABLED = _flag("REVIEW_LANGUAGE_FILTER_ENABLED", "true")
+
+# ---------------------------------------------------------------- Agentic router
+# Caps how many tool-call <-> LLM round-trips one chat turn may take, so a confused model
+# can't loop forever calling tools instead of answering. See PLAN.md Phase 4.
+AGENT_MAX_TOOL_ROUNDTRIPS = int(os.getenv("AGENT_MAX_TOOL_ROUNDTRIPS", "3"))
+if AGENT_MAX_TOOL_ROUNDTRIPS < 1:
+    raise ValueError(
+        f"AGENT_MAX_TOOL_ROUNDTRIPS must be at least 1, got {AGENT_MAX_TOOL_ROUNDTRIPS}"
+    )
+# LangGraph's in-process checkpointer/store for short-term agent state. Off by default:
+# InMemorySaver and InMemoryStore are module-level singletons that keep every thread's
+# messages for the LIFE OF THE PROCESS with no eviction, so a long-running server grows
+# without bound. MongoDB is the durable record of sessions and preferences either way,
+# and history_messages() reseeds the conversation from it, so turning this off costs
+# nothing a user can see. Turn it on only with a persistent, evicting checkpointer.
+AGENT_CHECKPOINTING_ENABLED = _flag("AGENT_CHECKPOINTING_ENABLED", "false")
+AGENT_MODEL_RETRIES = int(os.getenv("AGENT_MODEL_RETRIES", "2"))
+AGENT_MODEL_RETRY_INITIAL_DELAY_SECONDS = float(os.getenv("AGENT_MODEL_RETRY_INITIAL_DELAY_SECONDS", "0.5"))
+AGENT_MODEL_RETRY_MAX_DELAY_SECONDS = float(os.getenv("AGENT_MODEL_RETRY_MAX_DELAY_SECONDS", "8"))
+AGENT_SUMMARY_TRIGGER_FRACTION = float(os.getenv("AGENT_SUMMARY_TRIGGER_FRACTION", "0.75"))
+AGENT_SUMMARY_KEEP_MESSAGES = int(os.getenv("AGENT_SUMMARY_KEEP_MESSAGES", "16"))
+AGENT_SUMMARY_FALLBACK_TOKENS = int(os.getenv("AGENT_SUMMARY_FALLBACK_TOKENS", "24000"))
+AGENT_TOOL_CLEAR_TRIGGER_TOKENS = int(os.getenv("AGENT_TOOL_CLEAR_TRIGGER_TOKENS", "18000"))
+AGENT_TOOL_CLEAR_KEEP = int(os.getenv("AGENT_TOOL_CLEAR_KEEP", "2"))
+AGENT_TOOL_CLEAR_AT_LEAST_TOKENS = int(os.getenv("AGENT_TOOL_CLEAR_AT_LEAST_TOKENS", "4000"))
+if AGENT_MODEL_RETRIES < 0:
+    raise ValueError("AGENT_MODEL_RETRIES must not be negative")
+if not 0 < AGENT_SUMMARY_TRIGGER_FRACTION < 1:
+    raise ValueError("AGENT_SUMMARY_TRIGGER_FRACTION must be between 0 and 1")
+if AGENT_SUMMARY_KEEP_MESSAGES < 1:
+    raise ValueError("AGENT_SUMMARY_KEEP_MESSAGES must be at least 1")
 
 # ---------------------------------------------------------------- Chat history
 SESSIONS_COLLECTION = os.getenv("SESSIONS_COLLECTION", "chat_sessions")
@@ -277,20 +336,13 @@ if SEMANTIC_MIN_CHUNK_WORDS >= SEMANTIC_MAX_CHUNK_WORDS:
         f"SEMANTIC_MAX_CHUNK_WORDS ({SEMANTIC_MAX_CHUNK_WORDS})."
     )
 
-# OCR fallback for scanned/image-only PDFs. Needs `pip install pytesseract pillow` AND the
-# Tesseract binary installed on the machine; when either is missing, ingestion still works
-# and such PDFs are simply reported as skipped.
-OCR_ENABLED = _flag("OCR_ENABLED", "false")
-OCR_DPI = int(os.getenv("OCR_DPI", "200"))
-OCR_LANG = os.getenv("OCR_LANG", "eng")
-
 # ---------------------------------------------------------------- Retrieval
 TOP_K = int(os.getenv("TOP_K", "4"))
 MAX_TOP_K = int(os.getenv("MAX_TOP_K", "20"))  # hard ceiling on what a client may request
 
 # Retrieve a wide candidate set, then narrow it with the re-ranker. A bi-encoder is fast
 # but coarse; the cross-encoder is the thing that decides what actually reaches the model.
-RETRIEVAL_CANDIDATES = int(os.getenv("RETRIEVAL_CANDIDATES", "30"))
+RETRIEVAL_CANDIDATES = int(os.getenv("RETRIEVAL_CANDIDATES", "10"))
 
 # Hybrid search: BM25 keyword ranking fused with vector ranking (Reciprocal Rank Fusion).
 # Dense vectors are weak on exact technical terms ("A* search", "Bayes decision rule");
@@ -314,11 +366,13 @@ MIN_SIMILARITY = float(os.getenv("MIN_SIMILARITY", "0.15"))
 # the sentence that explains an answer often sits in the neighbouring chunk. Semantic
 # chunks do not overlap by design - a boundary is the point of the strategy - so this is
 # what stops the model reading a passage in isolation.
-NEIGHBOR_EXPANSION = int(os.getenv("NEIGHBOR_EXPANSION", "1"))
+NEIGHBOR_EXPANSION = int(os.getenv("NEIGHBOR_EXPANSION", "0"))
 
 # Cap on the assembled CONTEXT block, independent of top_k, so a large retrieval can
 # never blow past the model's context window.
-MAX_CONTEXT_CHARS = int(os.getenv("MAX_CONTEXT_CHARS", "24000"))
+MAX_CONTEXT_CHARS = int(os.getenv("MAX_CONTEXT_CHARS", "6000"))
+REVIEW_EXCERPT_CHARS = int(os.getenv("REVIEW_EXCERPT_CHARS", "700"))
+REVIEW_MAX_RESULTS_TO_MODEL = int(os.getenv("REVIEW_MAX_RESULTS_TO_MODEL", "6"))
 
 # Answer cache: repeated questions skip retrieval and the LLM call entirely. Entries are
 # per user, die when that user's documents change, and expire after the TTL.
@@ -336,21 +390,69 @@ if KEYWORD_SEARCH not in ("on", "off"):
 
 # ---------------------------------------------------------------- Conversation
 # How many previous question/answer pairs to carry into the prompt.
-HISTORY_TURNS = int(os.getenv("HISTORY_TURNS", "4"))
+HISTORY_TURNS = int(os.getenv("HISTORY_TURNS", "2"))
 # Hard ceiling on the conversation carried into the prompt, independent of HISTORY_TURNS.
 # The per-field limits in schemas.py stop one enormous turn; this stops several large ones
 # adding up.
-MAX_HISTORY_CHARS = int(os.getenv("MAX_HISTORY_CHARS", "8000"))
+MAX_HISTORY_CHARS = int(os.getenv("MAX_HISTORY_CHARS", "3000"))
 # Rewrite a follow-up ("what about the second one?") into a standalone question before
 # retrieving - the raw follow-up embeds to nothing useful.
 REWRITE_FOLLOWUPS = _flag("REWRITE_FOLLOWUPS", "true")
 
-# Origins allowed to call the API from a browser. The UI is served by this same process,
-# so the default is "same-origin only" - a wildcard would let any site on the internet
-# drive this API with a token it obtained by other means.
+# Origins allowed to call the API from a browser. The default static frontend is served by
+# this same FastAPI process, so local development needs no CORS entry. Set this only if a
+# browser calls the API directly from a different origin.
 CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
 
 # ---------------------------------------------------------------- Misc
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 # "text" for a human at a terminal, "json" for anything that ships logs somewhere.
 LOG_FORMAT = os.getenv("LOG_FORMAT", "text").lower()
+
+# App-only controls; changing these does not change an existing embedding generation.
+AGENT_TIMEOUT_SECONDS = float(os.getenv("AGENT_TIMEOUT_SECONDS", "120"))
+AGENT_TRACING_ENABLED = _flag("AGENT_TRACING_ENABLED", "false")
+APP_WARMUP_ENABLED = _flag("APP_WARMUP_ENABLED", "false")
+APP_WARMUP_DELAY_SECONDS = float(os.getenv("APP_WARMUP_DELAY_SECONDS", "20"))
+DIRECT_ANSWERS_ENABLED = _flag("DIRECT_ANSWERS_ENABLED", "true")
+if AGENT_TIMEOUT_SECONDS <= 0:
+    raise ValueError("AGENT_TIMEOUT_SECONDS must be positive")
+if APP_WARMUP_DELAY_SECONDS < 0:
+    raise ValueError("APP_WARMUP_DELAY_SECONDS cannot be negative")
+
+# ---------------------------------------------------------------- Response strategy (speed)
+# 'two_phase' (default, safest): the tool-enabled agent loop only gathers evidence; a
+# SEPARATE model call afterwards asks for the validated AnswerDraft. This exists because
+# Groq rejects native JSON mode on a request that also carries function tools.
+# 'merged': ask that SAME tool-enabled call to also emit AnswerDraft as just another bound
+# tool (LangChain's ToolStrategy), cutting one full model round-trip - typically the
+# single biggest latency win available, since each round-trip is a full network call to
+# the provider. Some hosted models are unreliable at obeying a forced tool call mixed in
+# with several others (see langchain-ai/langchain#34155) - measure 'merged' against your
+# own model/API key (compare timings and answer quality) before trusting it in production.
+AGENT_RESPONSE_STRATEGY = os.getenv("AGENT_RESPONSE_STRATEGY", "two_phase").strip().lower()
+if AGENT_RESPONSE_STRATEGY not in ("two_phase", "merged"):
+    raise ValueError(
+        f"AGENT_RESPONSE_STRATEGY must be 'two_phase' or 'merged', got {AGENT_RESPONSE_STRATEGY!r}"
+    )
+
+# Most chunks the lexical half of review search pulls back from the store for one
+# question before BM25 ranks them (src/services/review_search.py).
+#
+# This replaced an in-process BM25 index over the WHOLE collection, which at 308k review
+# chunks cost gigabytes of resident Python tokens, a rebuild measured in minutes that
+# blocked every concurrent review query behind one lock, and a full-corpus sort per
+# question. Chroma filters documents on disk; only the survivors are scored here. Raise
+# it for more lexical recall at a linear cost in per-question CPU, and note that it is a
+# ceiling, not a target - most questions match far fewer chunks than this.
+KEYWORD_CANDIDATE_LIMIT = int(os.getenv("KEYWORD_CANDIDATE_LIMIT", "300"))
+if KEYWORD_CANDIDATE_LIMIT < 1:
+    raise ValueError(f"KEYWORD_CANDIDATE_LIMIT must be at least 1, got {KEYWORD_CANDIDATE_LIMIT}")
+
+# Most free-form memories carried into the prompt for one account (see
+# src/services/preferences.py). Memory is only useful if the model reads it, and it reads
+# it by spending context on it on EVERY model call, so this is a running cost per
+# question, not just storage. Twenty short notes is a lot of remembered context.
+MEMORY_MAX_ENTRIES = int(os.getenv("MEMORY_MAX_ENTRIES", "20"))
+if MEMORY_MAX_ENTRIES < 1:
+    raise ValueError(f"MEMORY_MAX_ENTRIES must be at least 1, got {MEMORY_MAX_ENTRIES}")
