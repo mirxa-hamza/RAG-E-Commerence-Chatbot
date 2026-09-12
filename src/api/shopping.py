@@ -33,7 +33,10 @@ async def prepare(body, user):
 async def execute(uid, session, question, on_token=None, on_status=None):
     from src.services.direct_answers import answer_if_simple
 
-    direct = await answer_if_simple(uid, session["id"], question)
+    # The session's own messages decide whether a shortcut is safe: a follow-up in a
+    # conversation that already showed products must go to the agent, not to a
+    # whole-catalog lookup that knows nothing about what came before.
+    direct = await answer_if_simple(uid, session["id"], question, session.get("messages", []))
     if direct is not None:
         if on_token:
             on_token(direct.answer)

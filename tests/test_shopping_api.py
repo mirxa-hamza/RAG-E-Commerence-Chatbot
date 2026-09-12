@@ -70,7 +70,7 @@ async def test_sse_direct_answer_skips_agent(app, monkeypatch):
 @pytest.mark.asyncio
 async def test_direct_preference_answer_saves_memory_without_agent(app, monkeypatch):
     signed_in(app)
-    async def local_memory(user_id, session_id, question):
+    async def local_memory(user_id, session_id, question, history=None):
         return ShoppingResponse(session_id=session_id, answer="Saved to your shopping memory: size M.")
     monkeypatch.setattr(direct_answers, "answer_if_simple", local_memory)
     shopper.answer.reset_mock()

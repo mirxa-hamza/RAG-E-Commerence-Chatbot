@@ -21,6 +21,16 @@ _CONSTRAINED_PRODUCT = re.compile(
     r"\b(?:under|below|less than|between|budget|price|color|black|white|blue|navy|"
     r"dress(?:es)?|shoe(?:s)?|shirt(?:s)?|jacket(?:s)?|pants|skirt(?:s)?|size|brand)\b", re.I
 )
+# Language that points back at something already on screen. "Which of these is best
+# rated?" is a question ABOUT the previous results, and the whole-catalog shortcut
+# below would silently answer a different question.
+_REFERS_BACK = re.compile(
+    r"\b(?:these|those|them|they)\b"
+    r"|\bthe\s+(?:ones|options|results|products|items)\b"
+    r"|\b(?:first|second|third|last)\s+one\b"
+    r"|\byou\s+(?:just\s+)?(?:showed|listed|found|suggested)\b",
+    re.I,
+)
 
 
 def _collection():
@@ -102,7 +112,13 @@ async def _remember_simple_preferences(user_id: str, session_id: str, question: 
     return ShoppingResponse(session_id=session_id, answer="Saved to your shopping memory: " + "; ".join(changes) + ".")
 
 
-async def answer_if_simple(user_id: str, session_id: str, question: str) -> ShoppingResponse | None:
+def _already_showed_products(history) -> bool:
+    """Whether this conversation has put products on screen already."""
+    return any(message.get("products") for message in (history or []))
+
+
+async def answer_if_simple(user_id: str, session_id: str, question: str,
+                           history: list | None = None) -> ShoppingResponse | None:
     if not config.DIRECT_ANSWERS_ENABLED:
         return None
     q = question.strip()
@@ -117,6 +133,15 @@ async def answer_if_simple(user_id: str, session_id: str, question: str) -> Shop
         # Constrained requests must use the agent's filtered catalog/review tools.
         # The global top-rated shortcut would otherwise return unrelated products and
         # claim they satisfy a color, category, price, or preference constraint.
+        return None
+
+    # The shortcut below ranks the WHOLE catalog, so it is only ever the right answer
+    # to a standalone question. Asked as a follow-up - "which of these is best rated?"
+    # after a search for shoes - it silently answers a different question, and returns
+    # whatever tops the catalog overall (a garden table, a watch strap) as though those
+    # were the shoes. Hand anything referential, or anything in a conversation that has
+    # already shown products, to the agent: slower is far better than confidently wrong.
+    if _REFERS_BACK.search(q) or _already_showed_products(history):
         return None
 
     limit = 5
